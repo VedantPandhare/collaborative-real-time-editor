@@ -159,18 +159,31 @@ wss.on('connection', (ws, req) => {
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MESSAGE_SYNC);
       const syncMsgType = syncProtocol.readSyncMessage(decoder, encoder, ydoc, ws);
+      
       if (syncMsgType === syncProtocol.messageYjsSyncStep1) {
-        ws.send(encoding.toUint8Array(encoder));
-      } else if (encoding.length(encoder) > 1) {
-        // Broadcast update to all other connections
-        const msg = encoding.toUint8Array(encoder);
-        connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
-        // Also send back for confirmation
-        ws.send(msg);
+        // SyncStep1: Send back SyncStep2 (the missing updates)
+        if (encoding.length(encoder) > 1) {
+          ws.send(encoding.toUint8Array(encoder));
+        }
+      } else if (syncMsgType === syncProtocol.messageYjsSyncStep2 || syncMsgType === syncProtocol.messageYjsSyncUpdate) {
+        // Broadcast the update (Step 2 or regular Update) to all other connections
+        // We reuse the original incoming data for efficiency if possible
+        const msg = uint8; // This contains [MESSAGE_SYNC, ...SyncData]
+        connections.forEach(conn => {
+          if (conn !== ws && conn.readyState === WebSocket.OPEN) {
+            conn.send(msg);
+          }
+        });
       }
     } else if (msgType === MESSAGE_AWARENESS) {
       const update = decoding.readVarUint8Array(decoder);
       awarenessProtocol.applyAwarenessUpdate(awareness, update, ws);
+      // Broadcast awareness to everyone else
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_AWARENESS);
+      encoding.writeVarUint8Array(enc, update);
+      const msg = encoding.toUint8Array(enc);
+      connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
     } else if (msgType === MESSAGE_CHAT) {
       const payload = JSON.parse(decoding.readVarString(decoder));
       // Persist

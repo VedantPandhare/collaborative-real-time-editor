@@ -11,6 +11,6 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    include: ['yjs', 'lib0', 'y-protocols'],
+    include: ['yjs', 'lib0', 'y-protocols/sync', 'y-protocols/awareness'],
   }
 })

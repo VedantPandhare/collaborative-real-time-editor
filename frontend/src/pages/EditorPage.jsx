@@ -10,7 +10,6 @@ import { useCollabEditor } from '../hooks/useCollabEditor'
 import PresenceBar from '../components/PresenceBar'
 import Toolbar from '../components/Toolbar'
 import ChatPanel from '../components/ChatPanel'
-import AIPanel from '../components/AIPanel'
 import RevisionPanel from '../components/RevisionPanel'
 import RemoteCursors from '../components/RemoteCursors'
 import SlashMenu from '../components/SlashMenu'
@@ -30,6 +29,8 @@ export default function EditorPage() {
   const [focusMode, setFocusMode] = useState(false)
   const [title, setTitle] = useState('Untitled')
   const [chatMessages, setChatMessages] = useState([])
+  const [prediction, setPrediction] = useState('')
+  const [isAiLoading, setIsAiLoading] = useState(false)
 
   // Slash menu state
   const [slashMenu, setSlashMenu] = useState({ visible: false, x: 0, y: 0, query: '' })
@@ -155,6 +156,120 @@ export default function EditorPage() {
     return () => clearInterval(check)
   }, [doc, getQuill])
 
+  // ── AI Actions ─────────────────────────────────────────────────────────────
+  const aiActions = {
+    summarize: async () => {
+      const quill = getQuill()
+      if (!quill) return
+      const text = quill.getText()
+      setIsAiLoading(true)
+      try {
+        const res = await fetch('/api/ai/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, action: 'summarize' })
+        })
+        const reader = res.body.getReader()
+        quill.insertText(quill.getLength(), '\n\nSUMMARY:\n', { bold: true })
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const chunk = new TextDecoder().decode(value)
+          const lines = chunk.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              if (data === '[DONE]') break
+              try {
+                const { text: t } = JSON.parse(data)
+                if (t) quill.insertText(quill.getLength(), t)
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+      setIsAiLoading(false)
+    },
+    refine: async () => {
+      const quill = getQuill()
+      if (!quill) return
+      const sel = quill.getSelection()
+      const text = sel ? quill.getText(sel.index, sel.length) : quill.getText()
+      if (!text) return
+      setIsAiLoading(true)
+      try {
+        const res = await fetch('/api/ai/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, action: 'improve' })
+        })
+        const reader = res.body.getReader()
+        if (sel) quill.deleteText(sel.index, sel.length)
+        else quill.deleteText(0, quill.getLength())
+        
+        let currentPos = sel ? sel.index : 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const chunk = new TextDecoder().decode(value)
+          const lines = chunk.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              if (data === '[DONE]') break
+              try {
+                const { text: t } = JSON.parse(data)
+                if (t) {
+                  quill.insertText(currentPos, t)
+                  currentPos += t.length
+                }
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+      setIsAiLoading(false)
+    },
+    continueWriting: async () => {
+      const quill = getQuill()
+      if (!quill) return
+      const sel = quill.getSelection()
+      if (!sel) return
+      const context = quill.getText(0, sel.index)
+      setIsAiLoading(true)
+      setPrediction('')
+      try {
+        const res = await fetch('/api/ai/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: context, action: 'continue' })
+        })
+        const reader = res.body.getReader()
+        let fullPred = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const chunk = new TextDecoder().decode(value)
+          const lines = chunk.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              if (data === '[DONE]') break
+              try {
+                const { text: t } = JSON.parse(data)
+                if (t) {
+                  fullPred += t
+                  setPrediction(fullPred)
+                }
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+      setIsAiLoading(false)
+    }
+  }
+
   const handleSlashSelect = useCallback((cmd) => {
     const quill = getQuill()
     if (!quill) return
@@ -164,10 +279,16 @@ export default function EditorPage() {
     const lastSlash = text.lastIndexOf('/')
     const deleteCount = sel.index - lastSlash
     quill.deleteText(lastSlash, deleteCount, 'user')
-    cmd.action(quill, lastSlash)
+    
+    if (cmd.isAI) {
+      cmd.action(quill, lastSlash, aiActions)
+    } else {
+      cmd.action(quill, lastSlash)
+    }
+    
     setSlashMenu(m => ({ ...m, visible: false }))
     quill.focus()
-  }, [getQuill])
+  }, [getQuill, aiActions])
 
   // ── Panel toggle ────────────────────────────────────────────────────────────
   const togglePanel = (p) => setPanel(prev => prev === p ? PANEL.NONE : p)
@@ -177,9 +298,23 @@ export default function EditorPage() {
     const handler = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
         if (e.key === 'C') { e.preventDefault(); togglePanel(PANEL.CHAT) }
-        if (e.key === 'A') { e.preventDefault(); togglePanel(PANEL.AI) }
         if (e.key === 'H') { e.preventDefault(); togglePanel(PANEL.HISTORY) }
         if (e.key === 'F') { e.preventDefault(); setFocusMode(f => !f) }
+      }
+      if (e.key === 'Tab' && prediction) {
+        e.preventDefault()
+        const quill = getQuill()
+        if (quill) {
+          const sel = quill.getSelection()
+          if (sel) {
+            quill.insertText(sel.index, prediction)
+            quill.setSelection(sel.index + prediction.length)
+          }
+        }
+        setPrediction('')
+      }
+      if (e.key === 'Escape' && prediction) {
+        setPrediction('')
       }
     }
     window.addEventListener('keydown', handler)
@@ -213,65 +348,64 @@ export default function EditorPage() {
   return (
     <div className="flex flex-col h-screen bg-notion-bg overflow-hidden">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-notion-border bg-notion-surface/90 backdrop-blur-sm z-10">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-white/[0.05] bg-bg-secondary/80 backdrop-blur-xl z-20">
         {/* Left */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <button
             onClick={() => navigate('/')}
-            className="p-1.5 rounded hover:bg-notion-hover text-notion-muted hover:text-notion-text transition-all"
+            className="p-1.5 rounded-lg hover:bg-white/[0.05] text-text-secondary hover:text-white transition-all duration-200"
             title="Back to dashboard"
           >
-            <ArrowLeft size={15} />
+            <ArrowLeft size={18} />
           </button>
-          <ChevronRight size={12} className="text-notion-border" />
+          <div className="w-[1px] h-4 bg-white/10" />
           <input
             value={title}
             onChange={handleTitleChange}
-            placeholder="Untitled"
-            className="text-sm font-medium bg-transparent border-none outline-none text-notion-text placeholder-notion-border w-48 sm:w-64"
+            placeholder="Untitled Document"
+            className="text-sm font-semibold bg-transparent border-none outline-none text-text-primary placeholder-white/20 w-48 sm:w-80 font-display"
           />
         </div>
 
         {/* Right: actions */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
           <ExportMenu getQuill={getQuill} title={title} />
-
-          <div className="w-px h-4 bg-notion-border mx-1" />
+          
+          <div className="w-[1px] h-4 bg-white/10 mx-2" />
 
           <button
             onClick={() => window.open(`/view/${doc?.view_token}`, '_blank')}
-            className="flex items-center gap-1.5 text-xs text-notion-muted hover:text-notion-silver px-2 py-1.5 rounded hover:bg-notion-hover transition-all"
-            title="Open read-only view"
+            className="p-2 rounded-lg text-text-secondary hover:text-white hover:bg-white/[0.05] transition-all"
+            title="Preview mode"
           >
-            <Eye size={12} />
+            <Eye size={16} />
           </button>
 
           <button
             onClick={() => togglePanel(PANEL.CHAT)}
-            title="Chat (Ctrl+Shift+C)"
-            className={`relative flex items-center gap-1.5 text-xs px-2 py-1.5 rounded transition-all ${panel === PANEL.CHAT ? 'bg-notion-hover text-notion-text border border-notion-border' : 'text-notion-muted hover:text-notion-silver hover:bg-notion-hover'}`}
+            className={`p-2 rounded-lg transition-all relative ${panel === PANEL.CHAT ? 'bg-accent-soft text-accent-color' : 'text-text-secondary hover:text-white hover:bg-white/[0.05]'}`}
+            title="Discussion"
           >
-            <MessageSquare size={13} />
+            <MessageSquare size={16} />
             {chatMessages.length > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-green-500 rounded-full" />
+              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-blue-500 rounded-full" />
             )}
           </button>
 
           <button
-            onClick={() => togglePanel(PANEL.AI)}
-            title="AI Assistant (Ctrl+Shift+A)"
-            className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded transition-all ${panel === PANEL.AI ? 'bg-notion-hover text-notion-text border border-notion-border' : 'text-notion-muted hover:text-notion-silver hover:bg-notion-hover'}`}
+            onClick={() => togglePanel(PANEL.HISTORY)}
+            className={`p-2 rounded-lg transition-all ${panel === PANEL.HISTORY ? 'bg-accent-soft text-accent-color' : 'text-text-secondary hover:text-white hover:bg-white/[0.05]'}`}
+            title="History"
           >
-            <Sparkles size={13} />
+            <Clock size={16} />
           </button>
 
-          <button
-            onClick={() => togglePanel(PANEL.HISTORY)}
-            title="Revision History (Ctrl+Shift+H)"
-            className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded transition-all ${panel === PANEL.HISTORY ? 'bg-notion-hover text-notion-text border border-notion-border' : 'text-notion-muted hover:text-notion-silver hover:bg-notion-hover'}`}
-          >
-            <Clock size={13} />
-          </button>
+          {isAiLoading && (
+            <div className="ml-2 flex items-center gap-2 px-3 py-1 bg-accent-soft rounded-full border border-accent-color/20">
+              <Sparkles size={12} className="text-accent-color animate-pulse" />
+              <span className="text-[10px] font-bold text-accent-color uppercase tracking-wider">AI Thinking</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -298,10 +432,24 @@ export default function EditorPage() {
             style={{ minHeight: 'calc(100vh - 200px)' }}
           >
             {/* Quill editor mount point */}
-            <div
-              ref={editorContainerRef}
-              className={`transition-all duration-300 ${focusMode ? 'opacity-100' : 'opacity-100'}`}
-            />
+            <div className="relative">
+              <div
+                ref={editorContainerRef}
+                className={`transition-all duration-300 ${focusMode ? 'opacity-100' : 'opacity-100'}`}
+              />
+              {prediction && (
+                <div 
+                  className="ghost-text absolute pointer-events-none select-none"
+                  style={{
+                    top: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0).top,
+                    left: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0).left,
+                  }}
+                >
+                  {prediction}
+                  <span className="ml-2 text-[9px] bg-white/10 px-1.5 py-0.5 rounded uppercase tracking-tighter not-italic">Tab to accept</span>
+                </div>
+              )}
+            </div>
 
             {/* Remote cursors overlay */}
             {doc && (
@@ -323,12 +471,6 @@ export default function EditorPage() {
                 sendChat={sendChat}
                 messages={chatMessages}
                 users={users}
-              />
-            )}
-            {panel === PANEL.AI && (
-              <AIPanel
-                onClose={() => setPanel(PANEL.NONE)}
-                getQuill={getQuill}
               />
             )}
             {panel === PANEL.HISTORY && (

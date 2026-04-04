@@ -1,27 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
-}
-
-* {
-  box-sizing: border-box;
+  --bg-primary: #0b0c0e;
+  --bg-secondary: #121417;
+  --bg-tertiary: #1a1d21;
+  --text-primary: #f0f1f3;
+  --text-secondary: #949ca9;
+  --text-muted: #626a76;
+  --accent-color: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.1);
+  --border-primary: #2d3138;
+  --border-secondary: #3b414a;
+  --font-main: 'Inter', -apple-system, sans-serif;
+  --font-display: 'Outfit', sans-serif;
 }
 
 body {
   margin: 0;
-  background: #0f0f0f;
-  color: #e8e8e8;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-main);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-#root {
-  width: 100%;
-  min-height: 100vh;
 }
 
 /* Quill editor overrides for dark theme */
@@ -204,38 +207,66 @@ body {
 .slash-menu {
   position: absolute;
   z-index: 1000;
-  background: #1a1a1a;
-  border: 1px solid #2d2d2d;
-  border-radius: 8px;
-  padding: 4px;
-  min-width: 240px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  padding: 6px;
+  min-width: 280px;
+  max-height: 380px;
+  overflow-y: auto;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+  backdrop-filter: blur(12px);
 }
+
+.slash-menu::-webkit-scrollbar { width: 4px; }
 
 .slash-menu-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 5px;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
   cursor: pointer;
-  font-size: 13px;
-  transition: background 0.1s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .slash-menu-item:hover,
 .slash-menu-item.active {
-  background: #262626;
+  background: var(--accent-soft);
+  transform: translateX(4px);
 }
 
 .slash-menu-item .icon {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #222;
-  border: 1px solid #333;
-  border-radius: 5px;
-  font-size: 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.slash-menu-item.active .icon {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  background: var(--bg-secondary);
+}
+
+.ai-pill {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: linear-gradient(135deg, #a855f7, #3b82f6);
+  color: white;
+  border-radius: 4px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ghost-text {
+  color: var(--text-muted);
+  font-style: italic;
+  pointer-events: none;
 }
