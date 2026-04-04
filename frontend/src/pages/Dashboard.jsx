@@ -90,7 +90,7 @@ export default function Dashboard() {
             <div className="w-10 h-10 bg-accent-soft border border-accent-color/20 rounded-xl flex items-center justify-center shadow-lg shadow-accent-color/5">
               <Plus size={20} className="text-accent-color" />
             </div>
-            <span className="font-bold text-xl font-display tracking-tight text-white">coolab</span>
+            <span className="font-bold text-xl font-display tracking-tight text-white">LiveDraft</span>
           </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-3 px-4 py-2 bg-white/[0.03] border border-white/[0.05] rounded-full text-[11px] font-bold text-text-muted uppercase tracking-widest">
@@ -101,7 +101,7 @@ export default function Dashboard() {
               type="button"
               onClick={() => {
                 signOut()
-                navigate('/auth')
+                navigate('/')
               }}
               className="rounded-full border border-white/[0.05] bg-white/[0.03] px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-text-muted transition-colors hover:text-white"
             >

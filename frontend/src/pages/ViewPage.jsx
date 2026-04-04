@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { EditorContent } from '@tiptap/react'
 import { ArrowLeft, Clock } from 'lucide-react'
 import { getDoc } from '../lib/api'
 import { useCollabEditor } from '../hooks/useCollabEditorEnhanced'
@@ -12,7 +13,6 @@ export default function ViewPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [users, setUsersLocal] = useState([])
-  const editorContainerRef = useRef(null)
 
   useEffect(() => {
     getDoc(token)
@@ -31,10 +31,10 @@ export default function ViewPage() {
       })
   }, [token, navigate])
 
-  const { connected, users: collabUsers } = useCollabEditor({
+  const { connected, users: collabUsers, editor } = useCollabEditor({
     docId: doc?.id,
-    containerRef: editorContainerRef,
     readonly: true,
+    initialContent: doc?.content || '',
   })
 
   useEffect(() => { setUsersLocal(collabUsers) }, [collabUsers])
@@ -84,7 +84,7 @@ export default function ViewPage() {
 
       {/* Editor (readonly) */}
       <div className="max-w-3xl mx-auto">
-        <div ref={editorContainerRef} className="pointer-events-none select-text" />
+        <EditorContent editor={editor} className="pointer-events-none select-text" />
       </div>
 
       {/* Online editors count */}

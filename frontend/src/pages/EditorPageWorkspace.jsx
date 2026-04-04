@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { EditorContent } from '@tiptap/react'
 import { ArrowLeft, MessageSquare, Sparkles, Clock, Check, FileText } from 'lucide-react'
-import { getDoc, streamAI, updateDocTitle } from '../lib/api'
+import { getDoc, getSessionUser, streamAI, updateDocContent, updateDocTitle } from '../lib/api'
 import { setLocalUser } from '../lib/colors'
 import { useCollabEditor } from '../hooks/useCollabEditorEnhanced'
 import PresenceBar from '../components/PresenceBar'
@@ -10,6 +10,7 @@ import Toolbar from '../components/ToolbarRich'
 import ChatPanel from '../components/ChatPanel'
 import RevisionPanel from '../components/RevisionPanel'
 import RemoteCursors from '../components/RemoteCursorsTiptap'
+import SelectionBubbleMenu from '../components/SelectionBubbleMenu'
 import SlashMenu from '../components/SlashMenu'
 import ExportMenu from '../components/ExportMenuModern'
 import DocumentMap from '../components/DocumentMap'
@@ -66,12 +67,21 @@ export default function EditorPage() {
   const isAutocompleting = useRef(false)
   const abortControllerRef = useRef(null)
   const titleTimerRef = useRef(null)
+  const contentTimerRef = useRef(null)
   const onChatMessage = useCallback((msg) => setChatMessages((prev) => [...prev, msg]), [])
   const onChatHistory = useCallback((history) => setChatMessages(history), [])
 
   const { connected, users, sendChat, updateLocalUser, getYdoc, getEditor, editor } = useCollabEditor({
     docId: doc?.id,
     readonly: false,
+    initialContent: doc?.content || '',
+    onContentChange: ({ html }) => {
+      clearTimeout(contentTimerRef.current)
+      if (!doc?.id) return
+      contentTimerRef.current = setTimeout(() => {
+        updateDocContent(doc.id, html).catch(() => {})
+      }, 700)
+    },
     onChatMessage,
     onChatHistory,
   })
@@ -161,6 +171,18 @@ export default function EditorPage() {
   }, [token])
 
   useEffect(() => {
+    getSessionUser()
+      .then(({ user }) => {
+        const displayName = user?.email ? user.email.split('@')[0] : null
+        if (!displayName) return
+        const current = window.localStorage.getItem('user-color')
+        setLocalUser(displayName, current || '#5cbce0')
+        updateLocalUser(displayName, current || '#5cbce0')
+      })
+      .catch(() => {})
+  }, [updateLocalUser])
+
+  useEffect(() => {
     const template = location.state?.template
     if (!template?.content || !doc) return
 
@@ -189,12 +211,14 @@ export default function EditorPage() {
     return () => clearInterval(timer)
   }, [doc, getYdoc, title])
 
+  useEffect(() => () => clearTimeout(contentTimerRef.current), [])
+
   useEffect(() => {
     if (!doc) return
     const timer = setInterval(() => {
       const nextEditor = getEditor()
-      if (!nextEditor || nextEditor.__coolabEnhanced) return
-      nextEditor.__coolabEnhanced = true
+      if (!nextEditor || nextEditor.__livedraftEnhanced) return
+      nextEditor.__livedraftEnhanced = true
 
       const handleTextChange = () => {
         clearGhost()
@@ -236,17 +260,17 @@ export default function EditorPage() {
       nextEditor.on('selectionUpdate', handleSelectionChange)
       refreshOutline()
 
-      nextEditor.__coolabCleanup = () => {
+      nextEditor.__livedraftCleanup = () => {
         nextEditor.off('update', handleTextChange)
         nextEditor.off('selectionUpdate', handleSelectionChange)
-        delete nextEditor.__coolabEnhanced
+        delete nextEditor.__livedraftEnhanced
       }
     }, 150)
 
     return () => {
       clearInterval(timer)
       const nextEditor = getEditor()
-      nextEditor?.__coolabCleanup?.()
+      nextEditor?.__livedraftCleanup?.()
     }
   }, [clearGhost, doc, getEditor, ghostText, refreshOutline, triggerAutocomplete, updateGhostPosition])
 
@@ -282,10 +306,30 @@ export default function EditorPage() {
 
   const aiActionsRef = useRef(null)
   aiActionsRef.current = {
-    summarize: () => runAiTransform('summarize', { mode: 'append', label: 'AI Summary:' }),
-    refine: () => runAiTransform('improve', { mode: 'append', label: 'AI Refinement:' }),
-    bullets: () => runAiTransform('bullets', { mode: 'replace' }),
-    table: () => runAiTransform('table', { mode: 'append', label: 'AI Table:' }),
+    summarize: () => {
+      const nextEditor = getEditor()
+      const selection = nextEditor?.state.selection
+      if (!nextEditor || !selection || selection.from === selection.to) return
+      return runAiTransform('summarize', { mode: 'append', label: 'AI Summary:' })
+    },
+    refine: () => {
+      const nextEditor = getEditor()
+      const selection = nextEditor?.state.selection
+      if (!nextEditor || !selection || selection.from === selection.to) return
+      return runAiTransform('improve', { mode: 'replace', label: 'AI Refinement:' })
+    },
+    bullets: () => {
+      const nextEditor = getEditor()
+      const selection = nextEditor?.state.selection
+      if (!nextEditor || !selection || selection.from === selection.to) return
+      return runAiTransform('bullets', { mode: 'replace' })
+    },
+    table: () => {
+      const nextEditor = getEditor()
+      const selection = nextEditor?.state.selection
+      if (!nextEditor || !selection || selection.from === selection.to) return
+      return runAiTransform('table', { mode: 'append', label: 'AI Table:' })
+    },
     continueWriting: async () => {
       const nextEditor = getEditor()
       if (!nextEditor) return
@@ -408,7 +452,7 @@ export default function EditorPage() {
       <div className="min-h-screen bg-notion-bg flex items-center justify-center">
         <div className="text-center">
           <p className="text-lg font-medium text-notion-text mb-2">{error}</p>
-          <button onClick={() => navigate('/')} className="text-sm text-notion-muted hover:text-notion-text transition-colors">
+          <button onClick={() => navigate('/app')} className="text-sm text-notion-muted hover:text-notion-text transition-colors">
             Back to dashboard
           </button>
         </div>
@@ -427,7 +471,7 @@ export default function EditorPage() {
       <header className="relative z-40 flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.05] px-4 py-3 sm:px-6 bg-bg-secondary/90 backdrop-blur-xl">
         <div className="flex min-w-0 items-center gap-3">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/app')}
             className="group flex shrink-0 items-center gap-3"
             title="Back to dashboard"
           >
@@ -435,7 +479,7 @@ export default function EditorPage() {
               <FileText size={20} className="text-accent-color" />
             </div>
             <div className="hidden pr-2 sm:block">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-text-muted">coolab</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-text-muted">LiveDraft</p>
               <p className="text-sm font-semibold text-text-primary">Writing studio</p>
             </div>
           </button>
@@ -529,8 +573,16 @@ export default function EditorPage() {
               <div className="mx-auto w-full max-w-[980px] px-3 py-4 sm:px-6 sm:py-5">
                 <div className="rounded-[34px] border border-white/[0.05] bg-bg-secondary p-3 shadow-[0_20px_44px_rgba(0,0,0,0.20)] sm:p-4">
                   <div className="rounded-[30px] border border-white/[0.05] bg-[#fffdfa08] px-2 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:px-4 sm:py-4">
-                    <div className="mx-auto max-w-3xl">
-                      <EditorContent editor={editor} className="h-full w-full" />
+                    <div className="mx-auto w-full max-w-[860px]">
+                      <div className="tiptap-page">
+                        <SelectionBubbleMenu
+                          editor={editor}
+                          onSummarize={() => aiActionsRef.current?.summarize?.()}
+                          onRefine={() => aiActionsRef.current?.refine?.()}
+                          onContinue={() => aiActionsRef.current?.continueWriting?.()}
+                        />
+                        <EditorContent editor={editor} className="h-full w-full" />
+                      </div>
                       {doc && (
                         <RemoteCursors users={users.filter((user) => user.cursor)} getEditor={getEditor} />
                       )}

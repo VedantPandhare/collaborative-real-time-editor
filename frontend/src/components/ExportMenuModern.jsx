@@ -54,7 +54,7 @@ async function exportAsDocx(editor, title) {
     numbering: {
       config: [
         {
-          reference: 'coolab-numbering',
+          reference: 'livedraft-numbering',
           levels: [
             {
               level: 0,

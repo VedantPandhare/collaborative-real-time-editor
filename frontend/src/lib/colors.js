@@ -17,7 +17,13 @@ let _name = null
 let _color = null
 
 export function getLocalUser() {
-  if (!_name) _name = localStorage.getItem('user-name') || getRandomName()
+  const storedAccount = localStorage.getItem('livedraft-user')
+  let account = null
+  try {
+    account = storedAccount ? JSON.parse(storedAccount) : null
+  } catch (_) {}
+  const accountName = account?.email ? account.email.split('@')[0] : null
+  if (!_name) _name = localStorage.getItem('user-name') || accountName || getRandomName()
   if (!_color) _color = localStorage.getItem('user-color') || getRandomColor()
   return { name: _name, color: _color }
 }

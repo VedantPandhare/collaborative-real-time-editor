@@ -22,6 +22,9 @@ export default function PresenceBar({ doc, users, connected, onUpdateUser }) {
   const [editName, setEditName] = useState(false)
   const [nameVal, setNameVal] = useState(getLocalUser().name)
   const localUser = getLocalUser()
+  const joinedUsers = users.some((user) => user.name === localUser.name)
+    ? users
+    : [{ clientId: 'local', name: localUser.name, color: localUser.color }, ...users]
 
   const copyLink = async (type) => {
     const base = window.location.origin
@@ -66,16 +69,16 @@ export default function PresenceBar({ doc, users, connected, onUpdateUser }) {
         <div className="flex items-center gap-1.5">
           <Users size={12} className="text-notion-muted" />
           <div className="flex -space-x-1.5">
-            {users.slice(0, 6).map((u) => (
+            {joinedUsers.slice(0, 6).map((u) => (
               <Avatar key={u.clientId} user={u} size={24} />
             ))}
-            {users.length > 6 && (
+            {joinedUsers.length > 6 && (
               <div className="w-6 h-6 rounded-full bg-notion-hover border-2 border-notion-surface flex items-center justify-center text-[9px] text-notion-muted">
-                +{users.length - 6}
+                +{joinedUsers.length - 6}
               </div>
             )}
           </div>
-          <span className="text-xs text-notion-muted">{users.length}</span>
+          <span className="text-xs text-notion-muted">{joinedUsers.length}</span>
         </div>
 
         {/* My name */}

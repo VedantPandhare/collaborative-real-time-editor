@@ -13,7 +13,7 @@ import Groq from 'groq-sdk';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import db from './db.js';
-import { mirrorDocumentToSupabase, mirrorUserToSupabase } from './supabase.js';
+import { mirrorChatMessageToSupabase, mirrorDocumentToSupabase, mirrorUserToSupabase } from './supabase.js';
 
 function encodeDocStateFromContent(content = '', title = 'untitled') {
   const ydoc = new Y.Doc();
@@ -139,6 +139,7 @@ const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 const MESSAGE_CHAT = 2;
 const MESSAGE_CHAT_HISTORY = 3;
+const MESSAGE_CONTENT = 4;
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -226,12 +227,38 @@ wss.on('connection', (ws, req) => {
       // Persist
       db.prepare('INSERT INTO chat_messages (doc_id, user_name, user_color, message) VALUES (?,?,?,?)')
         .run(doc.id, payload.userName, payload.userColor, payload.message);
+      mirrorChatMessageToSupabase({
+        doc_id: doc.id,
+        user_name: payload.userName,
+        user_color: payload.userColor,
+        message: payload.message,
+      }).catch(() => {});
       // Broadcast to all (including sender)
       const enc = encoding.createEncoder();
       encoding.writeVarUint(enc, MESSAGE_CHAT);
       encoding.writeVarString(enc, JSON.stringify({ ...payload, created_at: Math.floor(Date.now() / 1000) }));
       const msg = encoding.toUint8Array(enc);
       connections.forEach(conn => { if (conn.readyState === WebSocket.OPEN) conn.send(msg); });
+    } else if (msgType === MESSAGE_CONTENT) {
+      const payload = JSON.parse(decoding.readVarString(decoder));
+      const title = payload.title || db.prepare('SELECT title FROM documents WHERE id=?').get(doc.id)?.title || 'Untitled';
+      db.prepare('UPDATE documents SET content=?, title=?, updated_at=unixepoch() WHERE id=?')
+        .run(payload.html || '', title, doc.id);
+      const currentDoc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(doc.id);
+      mirrorDocumentToSupabase({
+        ...currentDoc,
+        title,
+        content: payload.html || '',
+      }).catch(() => {});
+
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_CONTENT);
+      encoding.writeVarString(enc, JSON.stringify({
+        html: payload.html || '',
+        updated_at: Math.floor(Date.now() / 1000),
+      }));
+      const msg = encoding.toUint8Array(enc);
+      connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
     }
   });
 
@@ -329,11 +356,14 @@ app.get('/api/docs/:token', (req, res) => {
 // Update document title
 app.patch('/api/docs/:id', authRequired, async (req, res) => {
   const { id } = req.params;
-  const { title } = req.body;
+  const { title, content } = req.body;
   const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(id);
   if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE documents SET title=?, updated_at=unixepoch() WHERE id=?').run(title, id);
-  await mirrorDocumentToSupabase({ ...doc, title }).catch(() => {});
+  const current = db.prepare('SELECT title, content FROM documents WHERE id=?').get(id);
+  const nextTitle = typeof title === 'string' ? title : current?.title;
+  const nextContent = typeof content === 'string' ? content : current?.content;
+  db.prepare('UPDATE documents SET title=?, content=?, updated_at=unixepoch() WHERE id=?').run(nextTitle, nextContent, id);
+  await mirrorDocumentToSupabase({ ...doc, title: nextTitle, content: nextContent }).catch(() => {});
   res.json({ ok: true });
 });
 

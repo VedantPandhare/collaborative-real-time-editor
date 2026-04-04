@@ -13,11 +13,11 @@ export default function AuthPage() {
   const [error, setError] = useState('')
 
   const title = useMemo(() => (
-    mode === 'signin' ? 'Welcome back to coolab' : 'Create your coolab account'
+    mode === 'signin' ? 'Welcome back to LiveDraft' : 'Create your LiveDraft account'
   ), [mode])
 
   if (existingToken) {
-    return <Navigate to="/" replace />
+    return <Navigate to="/app" replace />
   }
 
   const handleSubmit = async (event) => {
@@ -30,7 +30,7 @@ export default function AuthPage() {
       } else {
         await signUp(email, password)
       }
-      navigate('/', { replace: true })
+      navigate('/app', { replace: true })
     } catch (err) {
       setError(err.message || 'Authentication failed')
     } finally {
@@ -48,7 +48,7 @@ export default function AuthPage() {
                 <FileText size={24} className="text-accent-color" />
               </div>
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-text-muted">coolab</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-text-muted">LiveDraft</p>
                 <h1 className="text-3xl font-semibold text-white sm:text-4xl">{title}</h1>
               </div>
             </div>

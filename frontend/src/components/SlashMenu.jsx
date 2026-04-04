@@ -9,7 +9,7 @@ const COMMANDS = [
   {
     label: 'Summarize',
     icon: Sparkles,
-    desc: 'AI writes a summary of the whole document',
+    desc: 'AI writes a summary of the selected text',
     isAI: true,
     action: (q, i, ai) => ai.summarize(),
   },
@@ -43,33 +43,24 @@ const COMMANDS = [
   },
 
   // ── Formatting Commands ───────────────────────────────────────────────────
-  { label: 'Heading 1',    icon: Heading1,    desc: 'Large section heading',    action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('header', 1, 'user') } },
-  { label: 'Heading 2',    icon: Heading2,    desc: 'Medium section heading',   action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('header', 2, 'user') } },
-  { label: 'Heading 3',    icon: Heading3,    desc: 'Small section heading',    action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('header', 3, 'user') } },
-  { label: 'Bullet List',  icon: List,        desc: 'Create an unordered list', action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('list', 'bullet', 'user') } },
-  { label: 'Ordered List', icon: ListOrdered, desc: 'Create a numbered list',   action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('list', 'ordered', 'user') } },
-  { label: 'Blockquote',   icon: Quote,       desc: 'Insert a callout quote',   action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('blockquote', true, 'user') } },
-  { label: 'Code Block',   icon: Code2,       desc: 'Insert a code snippet',    action: (q, i) => { q.insertText(i, '\n', 'user'); q.setSelection(i + 1); q.format('code-block', true, 'user') } },
+  { label: 'Heading 1',    icon: Heading1,    desc: 'Large section heading',    action: (q) => q.chain().focus().toggleHeading({ level: 1 }).run() },
+  { label: 'Heading 2',    icon: Heading2,    desc: 'Medium section heading',   action: (q) => q.chain().focus().toggleHeading({ level: 2 }).run() },
+  { label: 'Heading 3',    icon: Heading3,    desc: 'Small section heading',    action: (q) => q.chain().focus().toggleHeading({ level: 3 }).run() },
+  { label: 'Bullet List',  icon: List,        desc: 'Create an unordered list', action: (q) => q.chain().focus().toggleBulletList().run() },
+  { label: 'Ordered List', icon: ListOrdered, desc: 'Create a numbered list',   action: (q) => q.chain().focus().toggleOrderedList().run() },
+  { label: 'Blockquote',   icon: Quote,       desc: 'Insert a callout quote',   action: (q) => q.chain().focus().toggleBlockquote().run() },
+  { label: 'Code Block',   icon: Code2,       desc: 'Insert a code snippet',    action: (q) => q.chain().focus().toggleCodeBlock().run() },
   {
     label: 'Table',
     icon: Table2,
     desc: 'Insert a blank 3-column table',
-    action: (q, i) => {
-      const tableText = '\n| Column 1 | Column 2 | Column 3 |\n|----------|----------|----------|\n|          |          |          |\n|          |          |          |\n'
-      q.insertText(i, tableText, 'user')
-      q.setSelection(i + tableText.length)
-    },
+    action: (q) => q.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
   },
   {
     label: 'Highlight',
     icon: Highlighter,
     desc: 'Highlight selected text in yellow',
-    action: (q) => {
-      const sel = q.getSelection()
-      if (sel && sel.length > 0) {
-        q.format('background', '#fbbf2440', 'user')
-      }
-    },
+    action: (q) => q.chain().focus().toggleHighlight({ color: '#fbbf2440' }).run(),
   },
   {
     label: 'Divider',

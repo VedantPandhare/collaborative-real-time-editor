@@ -1,5 +1,6 @@
 const BASE = '/api'
-const TOKEN_KEY = 'coolab-token'
+const TOKEN_KEY = 'livedraft-token'
+const USER_KEY = 'livedraft-user'
 
 function notifyDocsChanged() {
   window.dispatchEvent(new CustomEvent('docs-updated'))
@@ -14,6 +15,22 @@ export function setAuthToken(token) {
     localStorage.setItem(TOKEN_KEY, token)
   } else {
     localStorage.removeItem(TOKEN_KEY)
+  }
+}
+
+export function getStoredUser() {
+  try {
+    return JSON.parse(localStorage.getItem(USER_KEY) || 'null')
+  } catch (_) {
+    return null
+  }
+}
+
+function setStoredUser(user) {
+  if (user) {
+    localStorage.setItem(USER_KEY, JSON.stringify(user))
+  } else {
+    localStorage.removeItem(USER_KEY)
   }
 }
 
@@ -39,6 +56,7 @@ export async function signUp(email, password) {
   })
   const data = await parseJson(r)
   setAuthToken(data.token)
+  setStoredUser(data.user)
   return data
 }
 
@@ -50,6 +68,7 @@ export async function signIn(email, password) {
   })
   const data = await parseJson(r)
   setAuthToken(data.token)
+  setStoredUser(data.user)
   return data
 }
 
@@ -57,11 +76,14 @@ export async function getSessionUser() {
   const r = await fetch(`${BASE}/auth/me`, {
     headers: authHeaders(),
   })
-  return parseJson(r)
+  const data = await parseJson(r)
+  setStoredUser(data.user)
+  return data
 }
 
 export function signOut() {
   setAuthToken(null)
+  setStoredUser(null)
 }
 
 export async function listDocs() {
@@ -118,6 +140,15 @@ export async function updateDocTitle(id, title) {
     method: 'PATCH',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ title }),
+  })
+  return parseJson(r)
+}
+
+export async function updateDocContent(id, content) {
+  const r = await fetch(`${BASE}/docs/${id}`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ content }),
   })
   return parseJson(r)
 }

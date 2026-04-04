@@ -8,8 +8,11 @@ export default function RemoteCursorsTiptap({ users, getEditor }) {
     if (!editor) return
 
     const editorEl = editor.view.dom
-    const parent = editorEl.parentElement
-    if (!parent) return
+    const host = editorEl.closest('.tiptap-page') || editorEl.parentElement
+    if (!host) return
+    if (getComputedStyle(host).position === 'static') {
+      host.style.position = 'relative'
+    }
 
     const activeIds = new Set(users.map((user) => String(user.clientId)))
     Object.keys(cursorsRef.current).forEach((id) => {
@@ -34,18 +37,16 @@ export default function RemoteCursorsTiptap({ users, getEditor }) {
         const caret = document.createElement('div')
         caret.style.cssText = 'position:absolute;width:2px;pointer-events:none;z-index:50;border-radius:1px;transition:all 80ms ease;'
         const flag = document.createElement('div')
-        flag.style.cssText = "position:absolute;pointer-events:none;z-index:51;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px 4px 4px 0;white-space:nowrap;font-family:'Inter',sans-serif;transition:all 80ms ease;opacity:0;"
-        parent.appendChild(caret)
-        parent.appendChild(flag)
+        flag.style.cssText = "position:absolute;pointer-events:none;z-index:51;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px 4px 4px 0;white-space:nowrap;font-family:'Inter',sans-serif;transition:all 80ms ease;opacity:1;box-shadow:0 8px 24px rgba(0,0,0,0.28);"
+        host.appendChild(caret)
+        host.appendChild(flag)
         cursorsRef.current[id] = { caret, flag }
-        setTimeout(() => { flag.style.opacity = '1' }, 50)
-        setTimeout(() => { flag.style.opacity = '0' }, 2000)
       }
 
       const { caret, flag } = cursorsRef.current[id]
-      const parentRect = parent.getBoundingClientRect()
-      const x = coords.left - parentRect.left
-      const y = coords.top - parentRect.top
+      const hostRect = host.getBoundingClientRect()
+      const x = coords.left - hostRect.left
+      const y = coords.top - hostRect.top
 
       caret.style.left = `${x}px`
       caret.style.top = `${y}px`
@@ -53,10 +54,11 @@ export default function RemoteCursorsTiptap({ users, getEditor }) {
       caret.style.backgroundColor = user.color
 
       flag.style.left = `${x}px`
-      flag.style.top = `${y - 18}px`
+      flag.style.top = `${Math.max(y - 18, 4)}px`
       flag.style.backgroundColor = user.color
       flag.style.color = '#fff'
       flag.textContent = user.name || '?'
+      flag.style.opacity = '1'
     })
 
     return () => {}

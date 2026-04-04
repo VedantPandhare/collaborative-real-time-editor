@@ -1,8 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import Collaboration from '@tiptap/extension-collaboration'
-import CollaborationCursor from '@tiptap/extension-collaboration-cursor'
 import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
 import TextAlign from '@tiptap/extension-text-align'
@@ -23,19 +21,20 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { getLocalUser } from '../lib/colors'
-import { MESSAGE_SYNC, MESSAGE_AWARENESS, MESSAGE_CHAT, MESSAGE_CHAT_HISTORY } from '../lib/wsProtocol'
+import { MESSAGE_SYNC, MESSAGE_AWARENESS, MESSAGE_CHAT, MESSAGE_CHAT_HISTORY, MESSAGE_CONTENT } from '../lib/wsProtocol'
 import { FontFamily, FontSize, TextStyle } from '../lib/tiptapExtensions'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 
 function textToHtml(text) {
+  if (typeof text === 'string' && text.trim().startsWith('<')) return text
   return String(text || '')
     .split('\n')
     .map((line) => line.trim() ? `<p>${line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : '<p></p>')
     .join('')
 }
 
-export function useCollabEditor({ docId, readonly = false, onChatMessage, onChatHistory }) {
+export function useCollabEditor({ docId, readonly = false, initialContent = '', onContentChange, onChatMessage, onChatHistory }) {
   const [connected, setConnected] = useState(false)
   const [users, setUsers] = useState([])
   const ydocRef = useRef(new Y.Doc())
@@ -43,18 +42,14 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
   const wsRef = useRef(null)
   const reconnectTimerRef = useRef(null)
   const mountedRef = useRef(true)
-  const seededRef = useRef(false)
+  const applyingRemoteRef = useRef(false)
+  const lastHtmlRef = useRef('')
 
   const editor = useEditor({
     editable: !readonly,
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({ history: false }),
-      Collaboration.configure({ document: ydocRef.current, field: 'content' }),
-      CollaborationCursor.configure({
-        provider: { awareness: awarenessRef.current },
-        user: getLocalUser(),
-      }),
+      StarterKit,
       TextStyle,
       FontFamily,
       FontSize,
@@ -77,6 +72,7 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
         class: readonly ? 'word-page-editor prose-editor is-readonly' : 'word-page-editor prose-editor',
       },
     },
+    content: textToHtml(initialContent),
     onSelectionUpdate: ({ editor: nextEditor }) => {
       const state = awarenessRef.current.getLocalState()
       if (state && !readonly) {
@@ -85,11 +81,19 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
       }
     },
     onUpdate: ({ editor: nextEditor }) => {
-      const ytext = ydocRef.current.getText('quill')
-      const plain = nextEditor.getText()
-      if (ytext.toString() !== plain) {
-        ytext.delete(0, ytext.length)
-        ytext.insert(0, plain)
+      if (applyingRemoteRef.current) return
+      lastHtmlRef.current = nextEditor.getHTML()
+      onContentChange?.({
+        html: lastHtmlRef.current,
+        text: nextEditor.getText(),
+      })
+
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const enc = encoding.createEncoder()
+        encoding.writeVarUint(enc, MESSAGE_CONTENT)
+        encoding.writeVarString(enc, JSON.stringify({ html: lastHtmlRef.current }))
+        ws.send(encoding.toUint8Array(enc))
       }
     },
   })
@@ -108,14 +112,15 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
   }, [])
 
   useEffect(() => {
-    if (!editor || seededRef.current) return
-    const fragment = ydocRef.current.getXmlFragment('content')
-    const existingPlain = ydocRef.current.getText('quill').toString()
-    if (fragment.length === 0 && existingPlain.trim()) {
-      editor.commands.setContent(textToHtml(existingPlain))
+    if (!editor) return
+    const html = textToHtml(initialContent)
+    if (html && editor.getHTML() !== html) {
+      applyingRemoteRef.current = true
+      editor.commands.setContent(html, false)
+      lastHtmlRef.current = html
+      queueMicrotask(() => { applyingRemoteRef.current = false })
     }
-    seededRef.current = true
-  }, [editor, connected])
+  }, [editor, initialContent])
 
   const connect = useCallback(() => {
     if (!docId || !mountedRef.current) return
@@ -158,6 +163,19 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
       if (msgType === MESSAGE_CHAT_HISTORY) {
         try {
           onChatHistory?.(JSON.parse(decoding.readVarString(decoder)))
+        } catch (_) {}
+        return
+      }
+
+      if (msgType === MESSAGE_CONTENT) {
+        try {
+          const payload = JSON.parse(decoding.readVarString(decoder))
+          if (editor && payload.html && payload.html !== lastHtmlRef.current) {
+            applyingRemoteRef.current = true
+            editor.commands.setContent(payload.html, false)
+            lastHtmlRef.current = payload.html
+            setTimeout(() => { applyingRemoteRef.current = false }, 0)
+          }
         } catch (_) {}
       }
     }
@@ -203,7 +221,7 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
       ydoc.off('update', updateHandler)
       awareness.off('change', awarenessHandler)
     }
-  }, [docId, onChatHistory, onChatMessage])
+  }, [docId, editor, onChatHistory, onChatMessage])
 
   useEffect(() => {
     mountedRef.current = true
@@ -213,11 +231,10 @@ export function useCollabEditor({ docId, readonly = false, onChatMessage, onChat
       clearTimeout(reconnectTimerRef.current)
       wsRef.current?._cleanup?.()
       wsRef.current?.close()
-      editor?.destroy()
       awarenessRef.current.destroy()
       ydocRef.current.destroy()
     }
-  }, [connect, editor])
+  }, [connect])
 
   const sendChat = useCallback((message) => {
     const ws = wsRef.current
