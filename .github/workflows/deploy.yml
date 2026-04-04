@@ -1,0 +1,64 @@
+name: Deploy LiveDraft to AWS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 60s
+          command_timeout: 30m
+          debug: true
+          envs: GITHUB_TOKEN
+          script: |
+            # Create project directory if it doesn't exist
+            mkdir -p "/home/ec2-user/livedraft"
+            cd "/home/ec2-user/livedraft"
+            
+            # Initialize git if not already there
+            if [ ! -d .git ]; then
+              git clone https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git .
+            else
+              git remote set-url origin https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git
+              git fetch --all
+              git reset --hard origin/main
+            fi
+
+            # Check for swap and create if missing (2GB) - essential for small EC2s
+            if [ $(free -m | grep Swap | awk '{print $2}') -lt 1024 ]; then
+              echo "Setting up swap space..."
+              if [ ! -f /swapfile ]; then
+                sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+                sudo chmod 600 /swapfile
+                sudo mkswap /swapfile
+              fi
+              sudo swapon /swapfile || true
+              if ! grep -q "/swapfile" /etc/fstab; then
+                echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+              fi
+            fi
+            
+            sudo docker system prune -af --volumes || true
+            sudo DOCKER_BUILDKIT=1 /usr/local/bin/docker-compose up -d --build
+            
+            # Refresh internal Docker IP mappings
+            sudo /usr/local/bin/docker-compose restart gateway
+            
+            # Print status and logs
+            echo "Waiting for services to stabilize..."
+            sleep 10
+            sudo /usr/local/bin/docker-compose ps
+            sudo /usr/local/bin/docker-compose logs --tail 50
