@@ -57,6 +57,9 @@ body {
 .ql-editor h1 { font-size: 2em; font-weight: 700; color: #f0f0f0; margin: 24px 0 8px; }
 .ql-editor h2 { font-size: 1.5em; font-weight: 600; color: #f0f0f0; margin: 20px 0 6px; }
 .ql-editor h3 { font-size: 1.25em; font-weight: 600; color: #f0f0f0; margin: 16px 0 4px; }
+.ql-editor .ql-font-inter { font-family: 'Inter', sans-serif; }
+.ql-editor .ql-font-serif { font-family: Georgia, 'Times New Roman', serif; }
+.ql-editor .ql-font-mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
 
 .ql-editor blockquote {
   border-left: 3px solid #404040;
@@ -89,6 +92,14 @@ body {
   color: #b0b0b0;
   text-decoration: underline;
   text-decoration-color: #444;
+}
+
+.ql-editor img {
+  max-width: 100%;
+  border-radius: 16px;
+  border: 1px solid #2d3138;
+  margin: 1.25rem auto;
+  display: block;
 }
 
 .ql-editor ul, .ql-editor ol {
@@ -208,13 +219,13 @@ body {
   z-index: 1000;
   background: var(--bg-secondary);
   border: 1px solid var(--border-primary);
-  border-radius: 12px;
-  padding: 6px;
-  min-width: 280px;
-  max-height: 380px;
-  overflow-y: auto;
-  box-shadow: 0 12px 48px rgba(0,0,0,0.7);
-  backdrop-filter: blur(12px);
+  border-radius: 14px;
+  padding: 4px 4px 0;
+  min-width: 300px;
+  max-height: 460px;
+  overflow: hidden;
+  box-shadow: 0 16px 64px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04);
+  backdrop-filter: blur(16px);
 }
 
 .slash-menu::-webkit-scrollbar { width: 4px; }
@@ -264,8 +275,50 @@ body {
   letter-spacing: 0.05em;
 }
 
-.ghost-text {
-  color: var(--text-muted);
-  font-style: italic;
+/* Ghost text autocomplete (VS Code Copilot style) */
+.ghost-suggestion {
   pointer-events: none;
+  user-select: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 760px;
+}
+
+.ghost-suggestion-text {
+  color: rgba(148, 163, 184, 0.6);
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+  background: transparent;
+  border-left: none;
+  padding-left: 0;
+  border-radius: 0;
+  display: inline;
+  animation: ghostFadeIn 0.3s ease;
+}
+
+.toolbar-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  border-radius: 12px;
+  padding: 0.65rem 0.85rem;
+  color: var(--text-secondary);
+  transition: background-color 0.15s ease, color 0.15s ease;
+  text-align: left;
+}
+
+.toolbar-menu-item:hover,
+.toolbar-menu-item.active {
+  background: rgba(59, 130, 246, 0.14);
+  color: var(--text-primary);
+}
+
+@keyframes ghostFadeIn {
+  from { opacity: 0; transform: translateX(4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* word-page-editor specific overrides */
+.word-page-editor .ql-editor {
+  min-height: 1100px;
 }

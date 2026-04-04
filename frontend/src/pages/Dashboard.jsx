@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, FileText, Trash2, Clock, ChevronRight, Search, Users } from 'lucide-react'
-import { listDocs, createDoc, deleteDoc } from '../lib/api'
+import { listDocs, createDoc, deleteDoc, signOut } from '../lib/api'
 import { formatDistanceToNow } from 'date-fns'
 
 const TEMPLATES = [
@@ -31,18 +31,40 @@ export default function Dashboard() {
   const [creating, setCreating] = useState(false)
   const navigate = useNavigate()
 
-  useEffect(() => {
+  const refreshDocs = useCallback(() => {
+    setLoading(true)
     listDocs()
       .then(setDocs)
       .catch(() => setDocs([]))
       .finally(() => setLoading(false))
   }, [])
 
+  useEffect(() => {
+    refreshDocs()
+
+    const handleDocsUpdated = () => refreshDocs()
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') refreshDocs()
+    }
+
+    window.addEventListener('docs-updated', handleDocsUpdated)
+    window.addEventListener('focus', refreshDocs)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.removeEventListener('docs-updated', handleDocsUpdated)
+      window.removeEventListener('focus', refreshDocs)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [refreshDocs])
+
   const newDoc = async (template = TEMPLATES[0]) => {
     setCreating(true)
     try {
-      const doc = await createDoc(template.name === 'Blank page' ? 'Untitled' : template.name)
-      navigate(`/doc/${doc.editToken}`, { state: { template } })
+      const doc = await createDoc(template.name === 'Blank page' ? 'untitled' : template.name)
+      const now = Math.floor(Date.now() / 1000)
+      setDocs((current) => [{ ...doc, created_at: now, updated_at: now }, ...current])
+      navigate(`/doc/${doc.edit_token}`, { state: { template } })
     } finally {
       setCreating(false)
     }
@@ -68,11 +90,23 @@ export default function Dashboard() {
             <div className="w-10 h-10 bg-accent-soft border border-accent-color/20 rounded-xl flex items-center justify-center shadow-lg shadow-accent-color/5">
               <Plus size={20} className="text-accent-color" />
             </div>
-            <span className="font-bold text-xl font-display tracking-tight text-white">Collab</span>
+            <span className="font-bold text-xl font-display tracking-tight text-white">coolab</span>
           </div>
-          <div className="flex items-center gap-3 px-4 py-2 bg-white/[0.03] border border-white/[0.05] rounded-full text-[11px] font-bold text-text-muted uppercase tracking-widest">
-            <Users size={14} className="text-accent-color" />
-            <span>{docs.length} Workspace Items</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 px-4 py-2 bg-white/[0.03] border border-white/[0.05] rounded-full text-[11px] font-bold text-text-muted uppercase tracking-widest">
+              <Users size={14} className="text-accent-color" />
+              <span>{docs.length} Workspace Items</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                signOut()
+                navigate('/auth')
+              }}
+              className="rounded-full border border-white/[0.05] bg-white/[0.03] px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-text-muted transition-colors hover:text-white"
+            >
+              Sign Out
+            </button>
           </div>
         </div>
       </header>

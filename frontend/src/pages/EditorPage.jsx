@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ArrowLeft, MessageSquare, Sparkles, Clock, Eye,
-  ChevronRight
 } from 'lucide-react'
 import { getDoc } from '../lib/api'
 import { setLocalUser } from '../lib/colors'
@@ -15,7 +14,36 @@ import RemoteCursors from '../components/RemoteCursors'
 import SlashMenu from '../components/SlashMenu'
 import ExportMenu from '../components/ExportMenu'
 
-const PANEL = { CHAT: 'chat', AI: 'ai', HISTORY: 'history', NONE: null }
+const PANEL = { CHAT: 'chat', HISTORY: 'history', NONE: null }
+
+// ── SSE streaming helper ──────────────────────────────────────────────────────
+async function streamAI(text, action, onChunk) {
+  const res = await fetch('/api/ai/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, action }),
+  })
+  if (!res.ok) throw new Error(`AI error ${res.status}`)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() // keep incomplete line
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6).trim()
+      if (payload === '[DONE]') return
+      try {
+        const { text: t } = JSON.parse(payload)
+        if (t) onChunk(t)
+      } catch (_) {}
+    }
+  }
+}
 
 export default function EditorPage() {
   const { token } = useParams()
@@ -29,25 +57,26 @@ export default function EditorPage() {
   const [focusMode, setFocusMode] = useState(false)
   const [title, setTitle] = useState('Untitled')
   const [chatMessages, setChatMessages] = useState([])
-  const [prediction, setPrediction] = useState('')
   const [isAiLoading, setIsAiLoading] = useState(false)
+
+  // Ghost-text autocomplete state
+  const [ghostText, setGhostText] = useState('')
+  const [ghostPos, setGhostPos] = useState({ top: 0, left: 0 })
+  const ghostCursorIndexRef = useRef(null) // index where ghost text starts
+  const autocompleteTimerRef = useRef(null)
+  const isAutocompleting = useRef(false)
+  const abortControllerRef = useRef(null)
 
   // Slash menu state
   const [slashMenu, setSlashMenu] = useState({ visible: false, x: 0, y: 0, query: '' })
-  const slashInsertIdx = useRef(null)
 
   const editorContainerRef = useRef(null)
 
-  // ── Chat handlers ──────────────────────────────────────────────────────────
-  const onChatMessage = useCallback((msg) => {
-    setChatMessages(prev => [...prev, msg])
-  }, [])
+  // ── Chat handlers ─────────────────────────────────────────────────────────
+  const onChatMessage = useCallback((msg) => setChatMessages(prev => [...prev, msg]), [])
+  const onChatHistory = useCallback((history) => setChatMessages(history), [])
 
-  const onChatHistory = useCallback((history) => {
-    setChatMessages(history)
-  }, [])
-
-  // ── Collab hook ────────────────────────────────────────────────────────────
+  // ── Collab hook ───────────────────────────────────────────────────────────
   const { connected, users, sendChat, updateLocalUser, getYdoc, getQuill } = useCollabEditor({
     docId: doc?.id,
     containerRef: editorContainerRef,
@@ -56,21 +85,14 @@ export default function EditorPage() {
     onChatHistory,
   })
 
-  // ── Load doc ───────────────────────────────────────────────────────────────
+  // ── Load doc ──────────────────────────────────────────────────────────────
   useEffect(() => {
     getDoc(token)
-      .then(d => {
-        setDoc(d)
-        setTitle(d.title || 'Untitled')
-        setLoading(false)
-      })
-      .catch(() => {
-        setError('Document not found')
-        setLoading(false)
-      })
+      .then(d => { setDoc(d); setTitle(d.title || 'Untitled'); setLoading(false) })
+      .catch(() => { setError('Document not found'); setLoading(false) })
   }, [token])
 
-  // ── Apply template on first load ───────────────────────────────────────────
+  // ── Apply template on first load ──────────────────────────────────────────
   useEffect(() => {
     const tpl = location.state?.template
     if (!tpl?.content || !doc) return
@@ -78,14 +100,12 @@ export default function EditorPage() {
       const quill = getQuill()
       if (!quill) return
       clearInterval(check)
-      if (quill.getText().trim() === '') {
-        quill.setText(tpl.content)
-      }
+      if (quill.getText().trim() === '') quill.setText(tpl.content)
     }, 200)
     return () => clearInterval(check)
   }, [doc, location.state, getQuill])
 
-  // ── Sync title from Yjs ────────────────────────────────────────────────────
+  // ── Sync title from Yjs ───────────────────────────────────────────────────
   useEffect(() => {
     if (!doc) return
     const check = setInterval(() => {
@@ -97,20 +117,18 @@ export default function EditorPage() {
     return () => clearInterval(check)
   }, [doc, getYdoc])
 
-  // ── Title edit ──────────────────────────────────────────────────────────────
+  // ── Title edit ────────────────────────────────────────────────────────────
+  const titleTimerRef = useRef(null)
   const handleTitleChange = useCallback((e) => {
     const val = e.target.value
     setTitle(val)
     const ydoc = getYdoc()
-    if (!ydoc) return
-    const ytitle = ydoc.getText('title')
-    if (ytitle.toString() !== val) {
-      ytitle.delete(0, ytitle.length)
-      ytitle.insert(0, val)
+    if (ydoc) {
+      const ytitle = ydoc.getText('title')
+      if (ytitle.toString() !== val) { ytitle.delete(0, ytitle.length); ytitle.insert(0, val) }
     }
-    // Debounce REST update
-    clearTimeout(handleTitleChange._timer)
-    handleTitleChange._timer = setTimeout(() => {
+    clearTimeout(titleTimerRef.current)
+    titleTimerRef.current = setTimeout(() => {
       fetch(`/api/docs/${doc?.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -119,7 +137,67 @@ export default function EditorPage() {
     }, 1000)
   }, [doc, getYdoc])
 
-  // ── Slash command detection ────────────────────────────────────────────────
+  // ── Ghost text helpers ────────────────────────────────────────────────────
+  const clearGhost = useCallback(() => {
+    setGhostText('')
+    ghostCursorIndexRef.current = null
+  }, [])
+
+  const updateGhostPosition = useCallback(() => {
+    const quill = getQuill()
+    if (!quill) return
+    const sel = quill.getSelection()
+    if (!sel) return
+    const bounds = quill.getBounds(sel.index)
+    const editorEl = quill.root
+    const rect = editorEl.getBoundingClientRect()
+    setGhostPos({ top: rect.top + bounds.top, left: rect.left + bounds.left })
+  }, [getQuill])
+
+  // ── Always-on AI autocomplete (VS Code Copilot style) ────────────────────
+  const triggerAutocomplete = useCallback(async () => {
+    const quill = getQuill()
+    if (!quill || isAutocompleting.current) return
+    const sel = quill.getSelection()
+    if (!sel) return
+    const context = quill.getText(0, sel.index).trim()
+    if (context.length < 20) return // need enough context
+
+    // Abort any previous in-flight request
+    if (abortControllerRef.current) abortControllerRef.current.abort()
+    abortControllerRef.current = new AbortController()
+
+    isAutocompleting.current = true
+    ghostCursorIndexRef.current = sel.index
+    updateGhostPosition()
+
+    let accumulated = ''
+    try {
+      await streamAI(context, 'continue', (chunk) => {
+        accumulated += chunk
+        setGhostText(accumulated)
+        updateGhostPosition()
+      })
+    } catch (_) {
+      clearGhost()
+    } finally {
+      isAutocompleting.current = false
+      if (!accumulated) clearGhost()
+    }
+  }, [getQuill, updateGhostPosition, clearGhost])
+
+  // ── Accept ghost text on Tab ──────────────────────────────────────────────
+  const acceptGhost = useCallback(() => {
+    const quill = getQuill()
+    if (!quill || !ghostText) return
+    const idx = ghostCursorIndexRef.current
+    if (idx == null) return
+    quill.insertText(idx, ghostText, 'user')
+    quill.setSelection(idx + ghostText.length)
+    clearGhost()
+  }, [getQuill, ghostText, clearGhost])
+
+  // ── Slash command detection + ghost text dismissal ────────────────────────
   useEffect(() => {
     if (!doc) return
     const check = setInterval(() => {
@@ -127,149 +205,157 @@ export default function EditorPage() {
       if (!quill || quill._slashBound) return
       quill._slashBound = true
 
-      quill.on('text-change', (delta) => {
+      quill.on('text-change', () => {
+        // Any typing dismisses ghost text
+        if (ghostCursorIndexRef.current !== null) clearGhost()
+
         const sel = quill.getSelection()
         if (!sel) return
+
+        // Slash menu detection
         const text = quill.getText(0, sel.index)
         const lastSlash = text.lastIndexOf('/')
-        if (lastSlash === -1 || sel.index - lastSlash > 20) {
-          setSlashMenu(m => m.visible ? { ...m, visible: false } : m)
-          return
+        if (lastSlash !== -1 && sel.index - lastSlash <= 20) {
+          const query = text.slice(lastSlash + 1)
+          if (!query.includes('\n') && !query.includes(' ')) {
+            const bounds = quill.getBounds(sel.index)
+            const rect = quill.root.getBoundingClientRect()
+            setSlashMenu({
+              visible: true,
+              x: Math.min(rect.left + bounds.left, window.innerWidth - 300),
+              y: Math.min(rect.top + bounds.top + bounds.height + 4, window.innerHeight - 400),
+              query,
+            })
+            // Don't trigger autocomplete while slash menu is open
+            clearTimeout(autocompleteTimerRef.current)
+            return
+          }
         }
-        const query = text.slice(lastSlash + 1)
-        if (query.includes('\n') || query.includes(' ')) {
-          setSlashMenu(m => m.visible ? { ...m, visible: false } : m)
-          return
-        }
-        slashInsertIdx.current = lastSlash + 1
-        const bounds = quill.getBounds(sel.index)
-        const editorEl = quill.root
-        const rect = editorEl.getBoundingClientRect()
-        setSlashMenu({
-          visible: true,
-          x: Math.min(rect.left + bounds.left, window.innerWidth - 260),
-          y: Math.min(rect.top + bounds.top + bounds.height + 4, window.innerHeight - 300),
-          query,
-        })
+        setSlashMenu(m => m.visible ? { ...m, visible: false } : m)
+
+        // Debounce autocomplete trigger — 1.5s pause like Copilot
+        clearTimeout(autocompleteTimerRef.current)
+        autocompleteTimerRef.current = setTimeout(() => {
+          if (!isAutocompleting.current) triggerAutocomplete()
+        }, 1500)
+      })
+
+      quill.on('selection-change', () => {
+        // Reposition ghost text if cursor moves
+        if (ghostText) updateGhostPosition()
       })
     }, 300)
     return () => clearInterval(check)
-  }, [doc, getQuill])
+  }, [doc, getQuill, clearGhost, triggerAutocomplete, updateGhostPosition]) // eslint-disable-line
 
-  // ── AI Actions ─────────────────────────────────────────────────────────────
-  const aiActions = {
+  // ── AI actions (via stable ref to avoid stale closures) ───────────────────
+  const aiActionsRef = useRef(null)
+  aiActionsRef.current = {
     summarize: async () => {
       const quill = getQuill()
       if (!quill) return
-      const text = quill.getText()
+      clearGhost()
+      const text = quill.getText().trim()
+      if (!text) return
       setIsAiLoading(true)
+      const insertPos = quill.getLength()
+      quill.insertText(insertPos - 1, '\n\n── AI Summary ──\n', { bold: true, color: '#3b82f6' }, 'user')
+      let pos = quill.getLength() - 1
       try {
-        const res = await fetch('/api/ai/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, action: 'summarize' })
+        await streamAI(text, 'summarize', (chunk) => {
+          quill.insertText(pos, chunk, { bold: false, color: false }, 'user')
+          pos += chunk.length
         })
-        const reader = res.body.getReader()
-        quill.insertText(quill.getLength(), '\n\nSUMMARY:\n', { bold: true })
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const chunk = new TextDecoder().decode(value)
-          const lines = chunk.split('\n')
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6)
-              if (data === '[DONE]') break
-              try {
-                const { text: t } = JSON.parse(data)
-                if (t) quill.insertText(quill.getLength(), t)
-              } catch (_) {}
-            }
-          }
-        }
       } catch (_) {}
       setIsAiLoading(false)
     },
+
     refine: async () => {
       const quill = getQuill()
       if (!quill) return
+      clearGhost()
       const sel = quill.getSelection()
-      const text = sel ? quill.getText(sel.index, sel.length) : quill.getText()
-      if (!text) return
+      const text = sel && sel.length > 0 ? quill.getText(sel.index, sel.length) : quill.getText()
+      if (!text.trim()) return
       setIsAiLoading(true)
+      const startIdx = sel && sel.length > 0 ? sel.index : 0
+      const deleteLen = sel && sel.length > 0 ? sel.length : quill.getLength() - 1
+      let refined = ''
       try {
-        const res = await fetch('/api/ai/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, action: 'improve' })
-        })
-        const reader = res.body.getReader()
-        if (sel) quill.deleteText(sel.index, sel.length)
-        else quill.deleteText(0, quill.getLength())
-        
-        let currentPos = sel ? sel.index : 0
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const chunk = new TextDecoder().decode(value)
-          const lines = chunk.split('\n')
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6)
-              if (data === '[DONE]') break
-              try {
-                const { text: t } = JSON.parse(data)
-                if (t) {
-                  quill.insertText(currentPos, t)
-                  currentPos += t.length
-                }
-              } catch (_) {}
-            }
-          }
-        }
+        await streamAI(text, 'improve', (chunk) => { refined += chunk })
+        // Replace after full response so we get clean text
+        quill.deleteText(startIdx, deleteLen, 'user')
+        quill.insertText(startIdx, refined, 'user')
+        quill.setSelection(startIdx + refined.length)
       } catch (_) {}
       setIsAiLoading(false)
     },
+
     continueWriting: async () => {
       const quill = getQuill()
       if (!quill) return
+      clearGhost()
       const sel = quill.getSelection()
       if (!sel) return
-      const context = quill.getText(0, sel.index)
+      const context = quill.getText(0, sel.index).trim()
+      if (!context) return
       setIsAiLoading(true)
-      setPrediction('')
+      ghostCursorIndexRef.current = sel.index
+      updateGhostPosition()
+      let accumulated = ''
       try {
-        const res = await fetch('/api/ai/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: context, action: 'continue' })
+        await streamAI(context, 'continue', (chunk) => {
+          accumulated += chunk
+          setGhostText(accumulated)
+          updateGhostPosition()
         })
-        const reader = res.body.getReader()
-        let fullPred = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const chunk = new TextDecoder().decode(value)
-          const lines = chunk.split('\n')
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6)
-              if (data === '[DONE]') break
-              try {
-                const { text: t } = JSON.parse(data)
-                if (t) {
-                  fullPred += t
-                  setPrediction(fullPred)
-                }
-              } catch (_) {}
-            }
-          }
-        }
+      } catch (_) { clearGhost() }
+      setIsAiLoading(false)
+      if (!accumulated) clearGhost()
+    },
+
+    bullets: async () => {
+      const quill = getQuill()
+      if (!quill) return
+      clearGhost()
+      const sel = quill.getSelection()
+      const text = sel && sel.length > 0 ? quill.getText(sel.index, sel.length) : quill.getText()
+      if (!text.trim()) return
+      setIsAiLoading(true)
+      const startIdx = sel && sel.length > 0 ? sel.index : 0
+      const deleteLen = sel && sel.length > 0 ? sel.length : quill.getLength() - 1
+      let result = ''
+      try {
+        await streamAI(text, 'bullets', (chunk) => { result += chunk })
+        quill.deleteText(startIdx, deleteLen, 'user')
+        quill.insertText(startIdx, result, 'user')
+        quill.setSelection(startIdx + result.length)
       } catch (_) {}
       setIsAiLoading(false)
-    }
+    },
+
+    table: async () => {
+      const quill = getQuill()
+      if (!quill) return
+      clearGhost()
+      const sel = quill.getSelection()
+      const text = sel && sel.length > 0 ? quill.getText(sel.index, sel.length) : quill.getText()
+      if (!text.trim()) return
+      setIsAiLoading(true)
+      const startIdx = sel && sel.length > 0 ? sel.index : 0
+      const deleteLen = sel && sel.length > 0 ? sel.length : 0
+      let result = ''
+      try {
+        await streamAI(text, 'table', (chunk) => { result += chunk })
+        if (deleteLen > 0) quill.deleteText(startIdx, deleteLen, 'user')
+        quill.insertText(startIdx, '\n' + result + '\n', 'user')
+        quill.setSelection(startIdx + result.length + 2)
+      } catch (_) {}
+      setIsAiLoading(false)
+    },
   }
 
+  // ── Slash command handler ─────────────────────────────────────────────────
   const handleSlashSelect = useCallback((cmd) => {
     const quill = getQuill()
     if (!quill) return
@@ -279,47 +365,50 @@ export default function EditorPage() {
     const lastSlash = text.lastIndexOf('/')
     const deleteCount = sel.index - lastSlash
     quill.deleteText(lastSlash, deleteCount, 'user')
-    
-    if (cmd.isAI) {
-      cmd.action(quill, lastSlash, aiActions)
-    } else {
-      cmd.action(quill, lastSlash)
-    }
-    
-    setSlashMenu(m => ({ ...m, visible: false }))
-    quill.focus()
-  }, [getQuill, aiActions])
 
-  // ── Panel toggle ────────────────────────────────────────────────────────────
-  const togglePanel = (p) => setPanel(prev => prev === p ? PANEL.NONE : p)
+    setSlashMenu(m => ({ ...m, visible: false }))
+    clearGhost()
+
+    // Use the ref so we always have freshest action closures
+    setTimeout(() => {
+      if (cmd.isAI) {
+        cmd.action(quill, lastSlash, aiActionsRef.current)
+      } else {
+        cmd.action(quill, lastSlash)
+      }
+      quill.focus()
+    }, 0)
+  }, [getQuill, clearGhost])
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e) => {
+      // Tab: accept ghost text
+      if (e.key === 'Tab' && ghostCursorIndexRef.current !== null) {
+        e.preventDefault()
+        acceptGhost()
+        return
+      }
+      // Escape: dismiss ghost text
+      if (e.key === 'Escape') {
+        if (ghostCursorIndexRef.current !== null) {
+          clearGhost()
+          isAutocompleting.current = false
+          abortControllerRef.current?.abort()
+        }
+      }
+      // Ctrl+Shift shortcuts
       if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-        if (e.key === 'C') { e.preventDefault(); togglePanel(PANEL.CHAT) }
-        if (e.key === 'H') { e.preventDefault(); togglePanel(PANEL.HISTORY) }
+        if (e.key === 'C') { e.preventDefault(); setPanel(p => p === PANEL.CHAT ? PANEL.NONE : PANEL.CHAT) }
+        if (e.key === 'H') { e.preventDefault(); setPanel(p => p === PANEL.HISTORY ? PANEL.NONE : PANEL.HISTORY) }
         if (e.key === 'F') { e.preventDefault(); setFocusMode(f => !f) }
       }
-      if (e.key === 'Tab' && prediction) {
-        e.preventDefault()
-        const quill = getQuill()
-        if (quill) {
-          const sel = quill.getSelection()
-          if (sel) {
-            quill.insertText(sel.index, prediction)
-            quill.setSelection(sel.index + prediction.length)
-          }
-        }
-        setPrediction('')
-      }
-      if (e.key === 'Escape' && prediction) {
-        setPrediction('')
-      }
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
+    window.addEventListener('keydown', handler, { capture: true })
+    return () => window.removeEventListener('keydown', handler, { capture: true })
+  }, [acceptGhost, clearGhost])
+
+  const togglePanel = (p) => setPanel(prev => prev === p ? PANEL.NONE : p)
 
   if (loading) {
     return (
@@ -370,7 +459,7 @@ export default function EditorPage() {
         {/* Right: actions */}
         <div className="flex items-center gap-2">
           <ExportMenu getQuill={getQuill} title={title} />
-          
+
           <div className="w-[1px] h-4 bg-white/10 mx-2" />
 
           <button
@@ -384,7 +473,7 @@ export default function EditorPage() {
           <button
             onClick={() => togglePanel(PANEL.CHAT)}
             className={`p-2 rounded-lg transition-all relative ${panel === PANEL.CHAT ? 'bg-accent-soft text-accent-color' : 'text-text-secondary hover:text-white hover:bg-white/[0.05]'}`}
-            title="Discussion"
+            title="Discussion (Ctrl+Shift+C)"
           >
             <MessageSquare size={16} />
             {chatMessages.length > 0 && (
@@ -395,7 +484,7 @@ export default function EditorPage() {
           <button
             onClick={() => togglePanel(PANEL.HISTORY)}
             className={`p-2 rounded-lg transition-all ${panel === PANEL.HISTORY ? 'bg-accent-soft text-accent-color' : 'text-text-secondary hover:text-white hover:bg-white/[0.05]'}`}
-            title="History"
+            title="History (Ctrl+Shift+H)"
           >
             <Clock size={16} />
           </button>
@@ -404,6 +493,13 @@ export default function EditorPage() {
             <div className="ml-2 flex items-center gap-2 px-3 py-1 bg-accent-soft rounded-full border border-accent-color/20">
               <Sparkles size={12} className="text-accent-color animate-pulse" />
               <span className="text-[10px] font-bold text-accent-color uppercase tracking-wider">AI Thinking</span>
+            </div>
+          )}
+
+          {ghostText && !isAiLoading && (
+            <div className="ml-2 flex items-center gap-2 px-3 py-1 bg-purple-500/10 rounded-full border border-purple-500/20">
+              <Sparkles size={12} className="text-purple-400" />
+              <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider">Tab to Accept</span>
             </div>
           )}
         </div>
@@ -422,7 +518,7 @@ export default function EditorPage() {
 
       {/* Main area */}
       <div className="flex flex-1 overflow-hidden bg-bg-primary relative">
-        {/* Sidebar/Remote Panels */}
+        {/* Sidebar panels */}
         {panel !== PANEL.NONE && (
           <div className="w-80 flex-shrink-0 overflow-y-auto border-r border-white/[0.05] bg-bg-secondary/50">
             {panel === PANEL.CHAT && (
@@ -435,45 +531,49 @@ export default function EditorPage() {
         )}
 
         {/* Editor area */}
-        <div className={`flex-1 overflow-y-auto relative transition-all flex flex-col items-center ${focusMode ? '' : ''}`}>
-          {/* Toolbar at the top of the editor feed */}
+        <div className={`flex-1 overflow-y-auto relative transition-all flex flex-col items-center`}>
           <Toolbar getQuill={getQuill} focusMode={focusMode} onToggleFocus={() => setFocusMode(f => !f)} />
 
-          {/* Word-like Page Wrapper */}
+          {/* Word-like page */}
           <div className="py-12 px-4 w-full flex justify-center">
             <div
-              className={`relative bg-bg-secondary border border-white/5 rounded-sm shadow-2xl shadow-black/50 transition-all duration-300 w-full max-w-[850px] min-h-[1100px] ${focusMode ? 'opacity-100 ring-1 ring-accent-color/30' : 'opacity-100'}`}
+              className={`relative bg-bg-secondary border border-white/5 rounded-sm shadow-2xl shadow-black/50 transition-all duration-300 w-full max-w-[850px] min-h-[1100px] ${focusMode ? 'ring-1 ring-accent-color/30' : ''}`}
             >
               <div className="relative h-full w-full">
-                {/* Quill editor mount point */}
                 <div ref={editorContainerRef} className="h-full w-full word-page-editor" />
-                
-                {prediction && (
-                  <div 
-                    className="ghost-text absolute pointer-events-none select-none z-10"
-                    style={{
-                      top: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0)?.top,
-                      left: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0)?.left,
-                    }}
-                  >
-                    {prediction}
-                    <span className="ml-2 text-[9px] bg-white/10 px-1.5 py-0.5 rounded uppercase tracking-tighter not-italic">Tab to accept</span>
-                  </div>
+
+                {/* Remote cursors */}
+                {doc && (
+                  <RemoteCursors
+                    users={users.filter(u => u.cursor)}
+                    getQuill={getQuill}
+                    focusMode={focusMode}
+                  />
                 )}
               </div>
-
-              {/* Remote cursors overlay */}
-              {doc && (
-                <RemoteCursors
-                  users={users.filter(u => u.cursor)}
-                  getQuill={getQuill}
-                  focusMode={focusMode}
-                />
-              )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Ghost text overlay — fixed-positioned at cursor */}
+      {ghostText && (
+        <div
+          className="ghost-suggestion"
+          style={{
+            position: 'fixed',
+            top: ghostPos.top,
+            left: ghostPos.left,
+            pointerEvents: 'none',
+            zIndex: 50,
+            lineHeight: '1.7',
+            fontSize: '16px',
+            fontFamily: 'var(--font-main)',
+          }}
+        >
+          <span className="ghost-suggestion-text">{ghostText}</span>
+        </div>
+      )}
 
       {/* Slash command menu */}
       {slashMenu.visible && (

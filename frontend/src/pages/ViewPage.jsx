@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Eye, Clock } from 'lucide-react'
+import { ArrowLeft, Clock } from 'lucide-react'
 import { getDoc } from '../lib/api'
-import { useCollabEditor } from '../hooks/useCollabEditor'
+import { useCollabEditor } from '../hooks/useCollabEditorEnhanced'
 import { formatDistanceToNow } from 'date-fns'
 
 export default function ViewPage() {
@@ -73,9 +73,6 @@ export default function ViewPage() {
               <ArrowLeft size={15} />
             </button>
             <h1 className="text-sm font-medium text-notion-text">{doc?.title || 'Untitled'}</h1>
-            <span className="flex items-center gap-1 text-[10px] text-notion-muted bg-notion-hover border border-notion-border px-2 py-0.5 rounded">
-              <Eye size={9} /> Read-only
-            </span>
           </div>
           <div className="flex items-center gap-2 text-xs text-notion-muted">
             {connected && <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />}

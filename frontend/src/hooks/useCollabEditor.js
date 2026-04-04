@@ -33,7 +33,7 @@ export function useCollabEditor({ docId, containerRef, readonly = false, onChatM
       placeholder: readonly ? '' : "Start writing… or type '/' for commands",
       modules: {
         toolbar: false, // we have our own toolbar
-        history: { delay: 0, maxStack: 0, userOnly: false },
+        history: { delay: 300, maxStack: 500, userOnly: true },
       },
       formats: ['bold', 'italic', 'underline', 'strike', 'code', 'link',
                 'header', 'blockquote', 'code-block', 'list', 'indent',
@@ -50,15 +50,6 @@ export function useCollabEditor({ docId, containerRef, readonly = false, onChatM
     const ws = new WebSocket(`${WS_URL}?docId=${docId}`)
     ws.binaryType = 'arraybuffer'
     wsRef.current = ws
-
-    ws.onopen = () => {
-      if (!mountedRef.current) return
-      setConnected(true)
-
-      // Set local awareness state
-      const { name, color } = getLocalUser()
-      awareness.setLocalState({ name, color, cursor: null })
-    }
 
     ws.onmessage = (event) => {
       if (!mountedRef.current) return

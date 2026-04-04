@@ -9,18 +9,47 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
-import * as map from 'lib0/map';
 import Groq from 'groq-sdk';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import db from './db.js';
+import { mirrorDocumentToSupabase, mirrorUserToSupabase } from './supabase.js';
+
+function encodeDocStateFromContent(content = '', title = 'untitled') {
+  const ydoc = new Y.Doc();
+  ydoc.getText('quill').insert(0, content);
+  ydoc.getText('title').insert(0, title || 'untitled');
+  const state = Y.encodeStateAsUpdate(ydoc);
+  ydoc.destroy();
+  return state;
+}
 
 const app = express();
 const server = createServer(app);
+const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_a_long_random_secret';
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
 // ─── Groq Client ────────────────────────────────────────────────────────
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || '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' });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+function createToken(user) {
+  return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+}
+
+function authRequired(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch (_) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+}
 
 // ─── Y-Doc Store ─────────────────────────────────────────────────────────────
 const docs = new Map(); // docId → { ydoc, awareness, connections }
@@ -53,8 +82,10 @@ function getOrCreateDoc(docId) {
     `).run(state, text.toString(), title.toString() || 'Untitled', docId);
   }, 5000);
 
-  // Snapshot every 2 minutes
+  // Snapshot every 30 seconds while dirty so history stays useful
   const snapshotInterval = setInterval(() => {
+    if (!dirty) return;
+    dirty = false;
     const state = Y.encodeStateAsUpdate(ydoc);
     const text = ydoc.getText('quill').toString();
     const title = ydoc.getText('title').toString() || 'Untitled';
@@ -62,12 +93,8 @@ function getOrCreateDoc(docId) {
     if (existing && text.length > 0) {
       db.prepare('INSERT INTO revisions (doc_id, snapshot, content, title) VALUES (?,?,?,?)')
         .run(docId, state, text, title);
-      // Keep only last 30 revisions
-      db.prepare(`DELETE FROM revisions WHERE doc_id=? AND id NOT IN (
-        SELECT id FROM revisions WHERE doc_id=? ORDER BY created_at DESC LIMIT 30
-      )`).run(docId, docId);
     }
-  }, 120000);
+  }, 30000);
 
   const entry = { ydoc, awareness, connections: new Set(), persistInterval, snapshotInterval };
   
@@ -80,7 +107,6 @@ function getOrCreateDoc(docId) {
     const message = encoding.toUint8Array(encoder);
 
     entry.connections.forEach(conn => {
-      // Broadcast to all clients EXCEPT the one that generated the update
       if (conn !== origin && conn.readyState === WebSocket.OPEN) {
         conn.send(message);
       }
@@ -211,7 +237,6 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     awareness.off('change', awarenessChangeHandler);
-    awarenessProtocol.removeAwarenessStates(awareness, [ydoc.clientID], null);
     connections.delete(ws);
     setTimeout(() => closeDoc(doc.id), 30000);
   });
@@ -219,21 +244,76 @@ wss.on('connection', (ws, req) => {
 
 // ─── REST API ─────────────────────────────────────────────────────────────────
 
+app.post('/api/auth/signup', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  const existing = db.prepare('SELECT id FROM users WHERE email=?').get(email);
+  if (existing) return res.status(409).json({ error: 'Account already exists' });
+
+  const id = uuidv4();
+  const passwordHash = await bcrypt.hash(password, 10);
+  db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?,?,?)')
+    .run(id, email, passwordHash);
+
+  const user = { id, email };
+  await mirrorUserToSupabase(user).catch(() => {});
+  res.json({ token: createToken(user), user });
+});
+
+app.post('/api/auth/signin', async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  const user = db.prepare('SELECT id, email, password_hash FROM users WHERE email=?').get(email);
+  if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+
+  const matches = await bcrypt.compare(password, user.password_hash);
+  if (!matches) return res.status(401).json({ error: 'Invalid email or password' });
+
+  res.json({
+    token: createToken(user),
+    user: { id: user.id, email: user.email },
+  });
+});
+
+app.get('/api/auth/me', authRequired, (req, res) => {
+  const user = db.prepare('SELECT id, email, created_at FROM users WHERE id=?').get(req.user.sub);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ user });
+});
+
 // List documents
-app.get('/api/docs', (req, res) => {
-  const rows = db.prepare('SELECT id, title, edit_token, view_token, created_at, updated_at FROM documents ORDER BY updated_at DESC').all();
+app.get('/api/docs', authRequired, (req, res) => {
+  const rows = db.prepare(`
+    SELECT id, title, edit_token, view_token, created_at, updated_at
+    FROM documents
+    WHERE owner_id = ?
+    ORDER BY updated_at DESC
+  `).all(req.user.sub);
   res.json(rows);
 });
 
 // Create document
-app.post('/api/docs', (req, res) => {
+app.post('/api/docs', authRequired, async (req, res) => {
   const id = uuidv4();
   const editToken = uuidv4();
   const viewToken = uuidv4();
-  const title = req.body?.title || 'Untitled';
-  db.prepare('INSERT INTO documents (id, edit_token, view_token, title) VALUES (?,?,?,?)')
-    .run(id, editToken, viewToken, title);
-  res.json({ id, editToken, viewToken, title });
+  const title = req.body?.title || 'untitled';
+  db.prepare('INSERT INTO documents (id, owner_id, edit_token, view_token, title) VALUES (?,?,?,?,?)')
+    .run(id, req.user.sub, editToken, viewToken, title);
+  const doc = { id, owner_id: req.user.sub, edit_token: editToken, view_token: viewToken, title };
+  await mirrorDocumentToSupabase(doc).catch(() => {});
+  res.json({ id, edit_token: editToken, view_token: viewToken, title });
 });
 
 // Get document by id or token
@@ -247,38 +327,56 @@ app.get('/api/docs/:token', (req, res) => {
 });
 
 // Update document title
-app.patch('/api/docs/:id', (req, res) => {
+app.patch('/api/docs/:id', authRequired, async (req, res) => {
   const { id } = req.params;
   const { title } = req.body;
+  const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(id);
+  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
   db.prepare('UPDATE documents SET title=?, updated_at=unixepoch() WHERE id=?').run(title, id);
+  await mirrorDocumentToSupabase({ ...doc, title }).catch(() => {});
   res.json({ ok: true });
 });
 
 // Delete document
-app.delete('/api/docs/:id', (req, res) => {
+app.delete('/api/docs/:id', authRequired, (req, res) => {
+  const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
+  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM documents WHERE id=?').run(req.params.id);
   res.json({ ok: true });
 });
 
 // Get revisions
-app.get('/api/docs/:id/revisions', (req, res) => {
+app.get('/api/docs/:id/revisions', authRequired, (req, res) => {
+  const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
+  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
   const rows = db.prepare('SELECT id, title, content, created_at FROM revisions WHERE doc_id=? ORDER BY created_at DESC')
     .all(req.params.id);
   res.json(rows);
 });
 
 // Restore revision
-app.post('/api/docs/:id/revisions/:revId/restore', (req, res) => {
+app.post('/api/docs/:id/revisions/:revId/restore', authRequired, async (req, res) => {
+  const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(req.params.id);
+  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
   const rev = db.prepare('SELECT * FROM revisions WHERE id=? AND doc_id=?').get(req.params.revId, req.params.id);
   if (!rev) return res.status(404).json({ error: 'Not found' });
 
+  const restoredState = encodeDocStateFromContent(rev.content, rev.title);
+
   const docEntry = docs.get(req.params.id);
   if (docEntry) {
-    // Apply snapshot to live doc
-    Y.applyUpdate(docEntry.ydoc, rev.snapshot);
+    docEntry.ydoc.transact(() => {
+      const ytext = docEntry.ydoc.getText('quill');
+      const ytitle = docEntry.ydoc.getText('title');
+      ytext.delete(0, ytext.length);
+      ytitle.delete(0, ytitle.length);
+      ytext.insert(0, rev.content || '');
+      ytitle.insert(0, rev.title || 'untitled');
+    }, 'restore');
   }
   db.prepare('UPDATE documents SET ydoc_state=?, content=?, title=?, updated_at=unixepoch() WHERE id=?')
-    .run(rev.snapshot, rev.content, rev.title, req.params.id);
+    .run(restoredState, rev.content, rev.title, req.params.id);
+  await mirrorDocumentToSupabase({ ...doc, title: rev.title, content: rev.content }).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -288,11 +386,14 @@ app.post('/api/ai/analyze', async (req, res) => {
   if (!text || !action) return res.status(400).json({ error: 'text and action required' });
 
   const prompts = {
-    summarize: `Please summarize the following text concisely:\n\n${text}`,
-    explain: `Please explain the following text in simple terms:\n\n${text}`,
-    improve: `Please improve the writing quality of the following text while preserving the original meaning:\n\n${text}`,
-    translate: `Please translate the following text to Spanish:\n\n${text}`,
-    bullets: `Please convert the following text into clear bullet points:\n\n${text}`,
+    summarize: `Summarize this text concisely in a few sentences. Return ONLY the summary, no preamble:\n\n${text}`,
+    explain: `Explain this text simply as if to a beginner. Return ONLY the explanation:\n\n${text}`,
+    improve: `Improve the clarity and flow of this text while keeping the exact same meaning. Return ONLY the improved text, no preamble or explanation:\n\n${text}`,
+    translate: `Translate this text to Spanish. Return ONLY the translation:\n\n${text}`,
+    bullets: `Convert this text into a clear, concise bulleted list using '- ' for each bullet. Return ONLY the bullet list, no intro text:\n\n${text}`,
+    table: `Convert the following data/text into a well-formatted markdown table with headers. Return ONLY the markdown table:\n\n${text}`,
+    highlight: `Identify the single most important sentence in the text and return it exactly as written:\n\n${text}`,
+    continue: `You are an AI writing assistant. Continue the following text naturally with 1-2 sentences that fit the style and topic. Return ONLY the continuation text, no preamble, no quotation marks:\n\n${text}`,
   };
 
   const prompt = prompts[action] || `${action}:\n\n${text}`;

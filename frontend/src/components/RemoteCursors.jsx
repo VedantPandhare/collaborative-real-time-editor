@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 // Renders coloured cursors/selections for remote users directly over the Quill editor
-export default function RemoteCursors({ users, getQuill, focusMode }) {
+export default function RemoteCursors({ users, getQuill }) {
   const cursorsRef = useRef({}) // clientId → { caret, flag }
   const containerRef = useRef(null)
 
@@ -34,7 +34,7 @@ export default function RemoteCursors({ users, getQuill, focusMode }) {
       const offsetX = editorRect.left - parentRect.left
       const offsetY = editorRect.top - parentRect.top
 
-      const opacity = focusMode ? 0.3 : 1
+      const opacity = 1
 
       if (!cursorsRef.current[id]) {
         const caret = document.createElement('div')
@@ -78,7 +78,7 @@ export default function RemoteCursors({ users, getQuill, focusMode }) {
 
     // Cleanup removed cursors
     return () => {}
-  }, [users, getQuill, focusMode])
+  }, [users, getQuill])
 
   // On unmount, clean up all cursors
   useEffect(() => {

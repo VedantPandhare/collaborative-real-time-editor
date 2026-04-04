@@ -3,7 +3,7 @@ import { X, Clock, RotateCcw, ChevronRight } from 'lucide-react'
 import { getRevisions, restoreRevision } from '../lib/api'
 import { format } from 'date-fns'
 
-export default function RevisionPanel({ docId, onClose, onRestored }) {
+export default function RevisionPanel({ docId, onClose, onRestored, modal = false }) {
   const [revisions, setRevisions] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
@@ -32,7 +32,7 @@ export default function RevisionPanel({ docId, onClose, onRestored }) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-notion-surface border-l border-notion-border">
+    <div className={`flex flex-col ${modal ? 'w-full max-w-2xl max-h-[80vh] rounded-3xl bg-bg-secondary border border-white/[0.08] shadow-2xl shadow-black/40 overflow-hidden' : 'h-full bg-notion-surface border-l border-notion-border'}`}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-notion-border">
         <div className="flex items-center gap-2">
           <Clock size={14} className="text-notion-muted" />
@@ -52,7 +52,7 @@ export default function RevisionPanel({ docId, onClose, onRestored }) {
           <div className="p-6 text-center">
             <Clock size={20} className="text-notion-border mx-auto mb-2" />
             <p className="text-xs text-notion-muted">No snapshots yet</p>
-            <p className="text-[10px] text-notion-border mt-1">Snapshots are created automatically every 2 minutes</p>
+            <p className="text-[10px] text-notion-border mt-1">Snapshots are created automatically while you edit</p>
           </div>
         )}
         {revisions.map((rev, i) => {

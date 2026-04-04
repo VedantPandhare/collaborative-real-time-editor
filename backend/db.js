@@ -9,8 +9,16 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
   CREATE TABLE IF NOT EXISTS documents (
     id          TEXT PRIMARY KEY,
+    owner_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
     edit_token  TEXT UNIQUE NOT NULL,
     view_token  TEXT UNIQUE NOT NULL,
     title       TEXT NOT NULL DEFAULT 'Untitled',
@@ -38,5 +46,10 @@ db.exec(`
     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
   );
 `);
+
+const documentColumns = db.prepare(`PRAGMA table_info(documents)`).all();
+if (!documentColumns.some((column) => column.name === 'owner_id')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+}
 
 export default db;
