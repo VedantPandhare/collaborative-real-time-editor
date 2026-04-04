@@ -4,22 +4,13 @@ LiveDraft is a collaborative writing workspace for teams that need real-time edi
 
 ## Introduction
 
-LiveDraft is designed as a document-first collaboration platform. Instead of splitting work across separate editing, chat, and review tools, it keeps drafting, refinement, discussion, and recovery inside the same writing surface.
+# LiveDraft is designed as a document-first collaboration platform. Instead of splitting work across separate editing, chat, and review tools, it keeps drafting, refinement, discussion, and recovery inside the same writing surface.
 
 At a product level, LiveDraft sits between:
 - a collaborative editor
 - an AI writing assistant
 - a shared team workspace
 - a lightweight versioned document system
-
-Typical user flow:
-1. Open the landing page
-2. Sign in or sign up
-3. Enter the dashboard
-4. Create or open a document
-5. Collaborate in real time
-6. Use AI tools, formatting, chat, and history from the same editor
-7. Export the document as PDF or DOCX
 
 ## Features
 
