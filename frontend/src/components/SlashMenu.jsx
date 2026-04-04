@@ -1,45 +1,73 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Heading1, Heading2, Heading3, List, ListOrdered,
-  Quote, Code2, Minus, Sparkles, Wand2, Zap, Table2, Highlighter,
+  Quote, Code2, Minus, Sparkles, Wand2, Zap, Table2, Highlighter, Languages, ListTodo, MessageSquare,
 } from 'lucide-react'
 
 const COMMANDS = [
   // ── AI Commands ──────────────────────────────────────────────────────────
   {
-    label: 'Summarize',
+    label: 'AI Summarization',
     icon: Sparkles,
-    desc: 'AI writes a summary of the selected text',
+    desc: 'Generate a concise summary from the selected text',
     isAI: true,
     action: (q, i, ai) => ai.summarize(),
   },
   {
-    label: 'Refine text',
+    label: 'AI Refine Text',
     icon: Wand2,
-    desc: 'AI improves the selected text quality',
+    desc: 'Improve the selected text while preserving meaning',
     isAI: true,
     action: (q, i, ai) => ai.refine(),
   },
   {
-    label: 'Continue writing',
+    label: 'AI Professional Rephrase',
+    icon: Wand2,
+    desc: 'Rewrite the selected text in a more polished professional tone',
+    isAI: true,
+    action: (q, i, ai) => ai.professionalRephrase(),
+  },
+  {
+    label: 'AI Continue Writing',
     icon: Zap,
-    desc: 'AI suggests what comes next (ghost preview)',
+    desc: 'Suggest the next sentence with inline ghost preview',
     isAI: true,
     action: (q, i, ai) => ai.continueWriting(),
   },
   {
-    label: 'AI Bullets',
-    icon: Sparkles,
-    desc: 'AI converts selected text to bullet points',
+    label: 'AI Translate Hindi',
+    icon: Languages,
+    desc: 'Translate the selected text into professional Hindi',
     isAI: true,
-    action: (q, i, ai) => ai.bullets(),
+    action: (q, i, ai) => ai.translateHindi(),
   },
   {
-    label: 'AI Table',
-    icon: Sparkles,
-    desc: 'AI generates a table from selected text',
+    label: 'AI Action Items',
+    icon: ListTodo,
+    desc: 'Extract a checklist of actionable next steps',
     isAI: true,
-    action: (q, i, ai) => ai.table(),
+    action: (q, i, ai) => ai.extractActionItems(),
+  },
+  {
+    label: 'AI Brainstorm Ideas',
+    icon: Sparkles,
+    desc: 'Generate creative ideas related to the topic',
+    isAI: true,
+    action: (q, i, ai) => ai.brainstormIdeas(),
+  },
+  {
+    label: 'AI Code Critic',
+    icon: Code2,
+    desc: 'Review code snippets and suggest improvements',
+    isAI: true,
+    action: (q, i, ai) => ai.codeCritic(),
+  },
+  {
+    label: 'AI Tone Analysis',
+    icon: MessageSquare,
+    desc: 'Analyze the tone of the selected content',
+    isAI: true,
+    action: (q, i, ai) => ai.toneAnalysis(),
   },
 
   // ── Formatting Commands ───────────────────────────────────────────────────

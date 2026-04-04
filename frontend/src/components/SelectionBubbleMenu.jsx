@@ -1,7 +1,7 @@
 import { BubbleMenu } from '@tiptap/react'
 import {
   Bold, Italic, Underline, Strikethrough, Highlighter, Code2,
-  Sparkles, Wand2, Zap,
+  Sparkles, Wand2, Zap, Languages, ListTodo,
 } from 'lucide-react'
 
 function BubbleButton({ icon: Icon, label, active = false, onClick }) {
@@ -24,7 +24,16 @@ function BubbleButton({ icon: Icon, label, active = false, onClick }) {
   )
 }
 
-export default function SelectionBubbleMenu({ editor, onSummarize, onRefine, onContinue, disabled = false }) {
+export default function SelectionBubbleMenu({
+  editor,
+  onSummarize,
+  onRefine,
+  onContinue,
+  onProfessional,
+  onTranslate,
+  onActionItems,
+  disabled = false,
+}) {
   if (!editor) return null
 
   return (
@@ -47,8 +56,11 @@ export default function SelectionBubbleMenu({ editor, onSummarize, onRefine, onC
         <div className="selection-bubble-divider" />
 
         <BubbleButton icon={Wand2} label="AI Refine" onClick={onRefine} />
+        <BubbleButton icon={Sparkles} label="AI Professional Rewrite" onClick={onProfessional} />
         <BubbleButton icon={Sparkles} label="AI Summarize" onClick={onSummarize} />
         <BubbleButton icon={Zap} label="Continue Writing" onClick={onContinue} />
+        <BubbleButton icon={Languages} label="Translate to Hindi" onClick={onTranslate} />
+        <BubbleButton icon={ListTodo} label="Extract Action Items" onClick={onActionItems} />
 
         {disabled ? <span className="selection-bubble-hint">Select text</span> : null}
       </div>

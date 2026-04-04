@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import LandingPage from './pages/LandingPage'
 import Dashboard from './pages/DashboardModern'
 import EditorPage from './pages/EditorPageWorkspace'
@@ -7,10 +8,18 @@ import AuthPage from './pages/AuthPage'
 import { getAuthToken } from './lib/api'
 
 function ProtectedRoute({ children }) {
-  return getAuthToken() ? children : <Navigate to="/auth" replace />
+  const location = useLocation()
+  return getAuthToken()
+    ? children
+    : <Navigate to="/auth" replace state={{ redirectTo: `${location.pathname}${location.search}${location.hash}` }} />
 }
 
 export default function App() {
+  useEffect(() => {
+    document.title = 'LiveDraft'
+    document.querySelectorAll('link[rel*="icon"]').forEach((node) => node.remove())
+  }, [])
+
   return (
     <BrowserRouter>
       <Routes>

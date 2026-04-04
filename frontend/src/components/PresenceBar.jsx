@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Users, Wifi, WifiOff, Eye, Copy, Check, Link2, ChevronDown } from 'lucide-react'
 import { setLocalUser, getLocalUser } from '../lib/colors'
 
@@ -22,9 +22,18 @@ export default function PresenceBar({ doc, users, connected, onUpdateUser }) {
   const [editName, setEditName] = useState(false)
   const [nameVal, setNameVal] = useState(getLocalUser().name)
   const localUser = getLocalUser()
-  const joinedUsers = users.some((user) => user.name === localUser.name)
-    ? users
-    : [{ clientId: 'local', name: localUser.name, color: localUser.color }, ...users]
+  const joinedUsers = useMemo(() => {
+    const map = new Map()
+    ;(users || []).forEach((user) => {
+      if (!user?.name) return
+      map.set(String(user.clientId ?? user.name), user)
+    })
+    if (![...map.values()].some((user) => user.name === localUser.name)) {
+      map.set('local', { clientId: 'local', name: localUser.name, color: localUser.color })
+    }
+    return [...map.values()]
+  }, [localUser.color, localUser.name, users])
+  const collaboratorLabel = `${joinedUsers.length} collaborator${joinedUsers.length === 1 ? '' : 's'}`
 
   const copyLink = async (type) => {
     const base = window.location.origin
@@ -57,10 +66,6 @@ export default function PresenceBar({ doc, users, connected, onUpdateUser }) {
             {connected ? 'Live' : 'Reconnecting…'}
           </span>
         </div>
-        <div className="w-px h-4 bg-notion-border" />
-        <span className="text-notion-muted text-xs truncate max-w-[200px]">
-          {doc?.title || 'Untitled'}
-        </span>
       </div>
 
       {/* Right: avatars + share */}
@@ -68,6 +73,7 @@ export default function PresenceBar({ doc, users, connected, onUpdateUser }) {
         {/* Online users */}
         <div className="flex items-center gap-1.5">
           <Users size={12} className="text-notion-muted" />
+          <span className="hidden text-xs font-medium text-notion-silver sm:inline">{collaboratorLabel}</span>
           <div className="flex -space-x-1.5">
             {joinedUsers.slice(0, 6).map((u) => (
               <Avatar key={u.clientId} user={u} size={24} />
@@ -78,7 +84,7 @@ export default function PresenceBar({ doc, users, connected, onUpdateUser }) {
               </div>
             )}
           </div>
-          <span className="text-xs text-notion-muted">{joinedUsers.length}</span>
+          <span className="text-xs font-semibold text-notion-silver">{joinedUsers.length}</span>
         </div>
 
         {/* My name */}

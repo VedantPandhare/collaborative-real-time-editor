@@ -4,3 +4,4 @@ export const MESSAGE_AWARENESS = 1
 export const MESSAGE_CHAT = 2
 export const MESSAGE_CHAT_HISTORY = 3
 export const MESSAGE_CONTENT = 4
+export const MESSAGE_PRESENCE = 5

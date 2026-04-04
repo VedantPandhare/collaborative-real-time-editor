@@ -21,17 +21,52 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import { getLocalUser } from '../lib/colors'
-import { MESSAGE_SYNC, MESSAGE_AWARENESS, MESSAGE_CHAT, MESSAGE_CHAT_HISTORY, MESSAGE_CONTENT } from '../lib/wsProtocol'
+import { MESSAGE_SYNC, MESSAGE_AWARENESS, MESSAGE_CHAT, MESSAGE_CHAT_HISTORY, MESSAGE_CONTENT, MESSAGE_PRESENCE } from '../lib/wsProtocol'
+import { AiAutocomplete } from '../lib/AiAutocomplete'
 import { FontFamily, FontSize, TextStyle } from '../lib/tiptapExtensions'
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 
 function textToHtml(text) {
-  if (typeof text === 'string' && text.trim().startsWith('<')) return text
+  if (typeof text === 'string' && text.trim().startsWith('<')) {
+    return text
+      .replace(/<div[^>]*data-type="page-break"[^>]*><\/div>/g, '')
+      .replace(/<hr[^>]*class="[^"]*page-break[^"]*"[^>]*>/g, '')
+      .replace(/<p>\s*Page Break\s*<\/p>/gi, '')
+  }
   return String(text || '')
     .split('\n')
+    .filter((line) => line.trim().toLowerCase() !== 'page break')
     .map((line) => line.trim() ? `<p>${line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : '<p></p>')
     .join('')
+}
+
+function normalizeUsers(rawUsers) {
+  const local = getLocalUser()
+  const map = new Map()
+
+  for (const user of rawUsers || []) {
+    if (!user?.name) continue
+    const key = String(user.clientId ?? `${user.name}:${user.color || ''}`)
+    map.set(key, {
+      clientId: user.clientId ?? key,
+      name: user.name,
+      color: user.color || local.color,
+      cursor: user.cursor || null,
+    })
+  }
+
+  const localExists = [...map.values()].some((user) => user.name === local.name)
+  if (!localExists) {
+    map.set('local', {
+      clientId: 'local',
+      name: local.name,
+      color: local.color,
+      cursor: null,
+    })
+  }
+
+  return [...map.values()]
 }
 
 export function useCollabEditor({ docId, readonly = false, initialContent = '', onContentChange, onChatMessage, onChatHistory }) {
@@ -66,10 +101,11 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
       TableRow,
       TableHeader,
       TableCell,
+      AiAutocomplete.configure({ debounceMs: 1800 }),
     ],
     editorProps: {
       attributes: {
-        class: readonly ? 'word-page-editor prose-editor is-readonly' : 'word-page-editor prose-editor',
+        class: readonly ? 'tiptap word-page-editor prose-editor is-readonly' : 'tiptap word-page-editor prose-editor',
       },
     },
     content: textToHtml(initialContent),
@@ -82,7 +118,7 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
     },
     onUpdate: ({ editor: nextEditor }) => {
       if (applyingRemoteRef.current) return
-      lastHtmlRef.current = nextEditor.getHTML()
+      lastHtmlRef.current = textToHtml(nextEditor.getHTML())
       onContentChange?.({
         html: lastHtmlRef.current,
         text: nextEditor.getText(),
@@ -105,7 +141,7 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
       awareness.getStates().forEach((state, clientId) => {
         if (state?.name) nextUsers.push({ clientId, ...state })
       })
-      setUsers(nextUsers)
+      setUsers(normalizeUsers(nextUsers))
     }
     awareness.on('change', handler)
     return () => awareness.off('change', handler)
@@ -167,6 +203,14 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
         return
       }
 
+      if (msgType === MESSAGE_PRESENCE) {
+        try {
+          const snapshot = JSON.parse(decoding.readVarString(decoder))
+          setUsers(normalizeUsers(Array.isArray(snapshot) ? snapshot : []))
+        } catch (_) {}
+        return
+      }
+
       if (msgType === MESSAGE_CONTENT) {
         try {
           const payload = JSON.parse(decoding.readVarString(decoder))
@@ -193,6 +237,7 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
       setConnected(true)
       const { name, color } = getLocalUser()
       awareness.setLocalState({ name, color, cursor: null })
+      setUsers(normalizeUsers([{ clientId: 'local', name, color, cursor: null }]))
       const enc = encoding.createEncoder()
       encoding.writeVarUint(enc, MESSAGE_SYNC)
       syncProtocol.writeSyncStep1(enc, ydoc)

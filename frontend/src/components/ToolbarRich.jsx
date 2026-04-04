@@ -3,7 +3,7 @@ import {
   Bold, Italic, Underline, Strikethrough, Code2, Quote, Link2, ImagePlus,
   AlignLeft, AlignCenter, AlignRight, List, ListOrdered, ListChecks,
   Undo2, Redo2, Eraser, Minus, Highlighter, PanelLeftClose, PanelLeftOpen,
-  Table2, ChevronDown, Palette, Type, FilePlus2,
+  Table2, ChevronDown, Palette, Type,
 } from 'lucide-react'
 
 const FONT_OPTIONS = [
@@ -134,7 +134,6 @@ export default function Toolbar({ editor, showOutline = true, onToggleOutline, w
 
   const insertTable = () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
   const insertDivider = () => editor.chain().focus().setHorizontalRule().run()
-  const insertPageBreak = () => editor.chain().focus().insertContent('<p style="text-align:center;color:#94a3b8;"><em>Page Break</em></p><hr /><p></p>').run()
   const clearFormatting = () => editor.chain().focus().unsetAllMarks().clearNodes().run()
 
   const sizeOptions = SIZE_OPTIONS.map((size) => ({ label: size, value: size }))
@@ -302,7 +301,6 @@ export default function Toolbar({ editor, showOutline = true, onToggleOutline, w
       <IconBtn icon={ImagePlus} title="Image" onClick={() => fileInputRef.current?.click()} />
       <IconBtn icon={Table2} title="Table" onClick={insertTable} />
       <IconBtn icon={Code2} title="Code block" active={editor.isActive('codeBlock')} onClick={() => editor.chain().focus().toggleCodeBlock().run()} />
-      <IconBtn icon={FilePlus2} title="Page break" onClick={insertPageBreak} />
       <IconBtn icon={Minus} title="Divider" onClick={insertDivider} />
       <IconBtn icon={Eraser} title="Clear formatting" onClick={clearFormatting} />
 

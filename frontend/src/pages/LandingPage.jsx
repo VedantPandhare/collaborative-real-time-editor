@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ArrowRight, Menu, X, Sparkles, Users, History, Wand2, ShieldCheck, FileText,
+  ArrowRight, Menu, X, Sparkles, Users, History, Wand2, ShieldCheck, NotebookPen, MousePointer2, GitBranchPlus,
 } from 'lucide-react'
 import { getAuthToken } from '../lib/api'
 
@@ -33,6 +33,11 @@ export default function LandingPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const signedIn = !!getAuthToken()
 
+  const scrollToFeatures = () => {
+    document.getElementById('feature-layer')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    setMobileMenuOpen(false)
+  }
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-bg-primary text-text-primary">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -46,18 +51,15 @@ export default function LandingPage() {
         <nav className="mx-auto mt-6 flex max-w-7xl items-center justify-between px-4 py-4">
           <button className="flex items-center gap-3" onClick={() => navigate('/')}>
             <div className="flex h-12 w-12 items-center justify-center rounded-[20px] border border-white/15 bg-white/[0.04] shadow-[0_18px_40px_rgba(59,130,246,0.12)]">
-              <FileText size={22} className="text-white" />
+              <NotebookPen size={22} className="text-white" />
             </div>
             <div className="text-left">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-text-muted">LiveDraft</p>
-              <p className="text-2xl font-semibold text-white">Writing studio</p>
+              <p className="text-[1.75rem] font-semibold tracking-[-0.03em] text-white">LiveDraft</p>
             </div>
           </button>
 
           <div className="hidden items-center gap-6 md:flex">
-            <button className="text-sm text-text-secondary hover:text-white">Features</button>
-            <button className="text-sm text-text-secondary hover:text-white">Collaboration</button>
-            <button className="text-sm text-text-secondary hover:text-white">AI Workspace</button>
+            <button onClick={scrollToFeatures} className="text-sm text-text-secondary hover:text-white">Features</button>
             <button
               onClick={() => navigate(signedIn ? '/app' : '/auth')}
               className="rounded-full border border-white/[0.08] bg-white/[0.04] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-white/[0.08]"
@@ -74,9 +76,7 @@ export default function LandingPage() {
         {mobileMenuOpen ? (
           <div className="mx-4 rounded-3xl border border-white/[0.06] bg-bg-secondary/95 p-4 shadow-2xl shadow-black/30 md:hidden">
             <div className="flex flex-col gap-4 text-sm text-text-secondary">
-              <button className="text-left hover:text-white">Features</button>
-              <button className="text-left hover:text-white">Collaboration</button>
-              <button className="text-left hover:text-white">AI Workspace</button>
+              <button onClick={scrollToFeatures} className="text-left hover:text-white">Features</button>
               <button
                 onClick={() => navigate(signedIn ? '/app' : '/auth')}
                 className="rounded-2xl bg-white px-4 py-3 font-medium text-black"
@@ -141,12 +141,29 @@ export default function LandingPage() {
                     </div>
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="rounded-3xl border border-white/[0.06] bg-white/[0.03] p-5">
-                        <p className="text-sm font-medium text-white">Shared cursors</p>
-                        <p className="mt-2 text-sm leading-7 text-text-secondary">See who is inside the page, where they are, and what part of the draft they’re shaping.</p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 text-sky-300">
+                            <MousePointer2 size={18} />
+                          </div>
+                          <p className="text-sm font-medium text-white">Shared cursors</p>
+                        </div>
+                        <div className="mt-4 overflow-hidden rounded-2xl border border-white/[0.06] bg-bg-primary/70 p-3">
+                          <img
+                            src="/image1.png"
+                            alt="Shared cursor preview"
+                            className="h-28 w-full object-contain"
+                          />
+                        </div>
+                        <p className="mt-2 text-sm leading-7 text-text-secondary"></p>
                       </div>
                       <div className="rounded-3xl border border-white/[0.06] bg-white/[0.03] p-5">
-                        <p className="text-sm font-medium text-white">Version history</p>
-                        <p className="mt-2 text-sm leading-7 text-text-secondary">Restore snapshots while preserving the collaborative workflow and discussion around the document.</p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-violet-400/20 bg-violet-400/10 text-violet-300">
+                            <GitBranchPlus size={18} />
+                          </div>
+                          <p className="text-sm font-medium text-white">Version history</p>
+                        </div>
+                        <p className="mt-3 text-sm leading-7 text-text-secondary">Restore snapshots while preserving the collaborative workflow and discussion around the document.</p>
                       </div>
                     </div>
                   </div>
@@ -155,7 +172,7 @@ export default function LandingPage() {
             </div>
           </div>
 
-          <section className="mt-20">
+          <section id="feature-layer" className="mt-20">
             <div className="mb-8 flex items-end justify-between gap-6">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-text-muted">Feature Layer</p>

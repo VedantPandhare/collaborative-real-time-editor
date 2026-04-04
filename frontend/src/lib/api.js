@@ -127,6 +127,13 @@ export async function getRevisions(id) {
   return r.json()
 }
 
+export async function getRevision(docId, revId) {
+  const r = await fetch(`${BASE}/docs/${docId}/revisions/${revId}`, {
+    headers: authHeaders(),
+  })
+  return parseJson(r)
+}
+
 export async function restoreRevision(docId, revId) {
   const r = await fetch(`${BASE}/docs/${docId}/revisions/${revId}/restore`, {
     method: 'POST',
@@ -160,7 +167,10 @@ export async function streamAI(text, action, onChunk, signal) {
     body: JSON.stringify({ text, action }),
     signal,
   })
-  if (!r.ok || !r.body) throw new Error('AI request failed')
+  if (!r.ok || !r.body) {
+    const data = await r.json().catch(() => ({}))
+    throw new Error(data.error || 'AI request failed')
+  }
   const reader = r.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
@@ -176,8 +186,34 @@ export async function streamAI(text, action, onChunk, signal) {
       if (payload === '[DONE]') return
       try {
         const parsed = JSON.parse(payload)
+        if (parsed.error) {
+          throw new Error(parsed.error)
+        }
         if (parsed.text) onChunk(parsed.text)
-      } catch (_) {}
+      } catch (error) {
+        if (error instanceof Error) throw error
+      }
     }
   }
+}
+
+export async function fetchAiAutocomplete(documentText, signal) {
+  const r = await fetch(`${BASE}/ai/autocomplete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ documentText }),
+    signal,
+  })
+  const data = await parseJson(r)
+  return data.output || ''
+}
+
+export async function aiCommand(instruction, selectionText = '', documentText = '') {
+  const r = await fetch(`${BASE}/ai/command`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ instruction, selectionText, documentText }),
+  })
+  const data = await parseJson(r)
+  return data.output || ''
 }

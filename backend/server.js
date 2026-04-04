@@ -27,12 +27,45 @@ function encodeDocStateFromContent(content = '', title = 'untitled') {
 const app = express();
 const server = createServer(app);
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_a_long_random_secret';
+const AI_MODEL = process.env.AI_MODEL || 'llama-3.3-70b-versatile';
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
 // ─── Groq Client ────────────────────────────────────────────────────────
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+function ensureGroqConfigured(res) {
+  if (!process.env.GROQ_API_KEY) {
+    res.status(503).json({ error: 'GROQ_API_KEY is missing in backend/.env' });
+    return false;
+  }
+  return true;
+}
+
+function buildAiCommandPrompt(instruction, selectionText, documentText) {
+  return [
+    'You are an elite collaborative writing assistant and AI consultant.',
+    'Your goal is to provide high-quality, professional, and contextually aware text enhancements.',
+    '',
+    'RULES:',
+    '- Return ONLY the final text to be inserted or replaced.',
+    '- DO NOT include markdown code fences or conversational filler.',
+    '- Maintain the existing tone and formatting of the document unless instructed otherwise.',
+    '- If summarizing, be concise but useful.',
+    '- If refining, improve clarity, grammar, and impact.',
+    '',
+    `INSTRUCTION: ${instruction}`,
+    '',
+    'SELECTED TEXT TO OPERATE ON:',
+    selectionText || '(none)',
+    '',
+    'FULL DOCUMENT CONTEXT:',
+    documentText || '(none)',
+    '',
+    'RESPONSE:',
+  ].join('\n');
+}
 
 function createToken(user) {
   return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
@@ -61,46 +94,84 @@ function getOrCreateDoc(docId) {
   const awareness = new awarenessProtocol.Awareness(ydoc);
 
   // Load persisted state
-  const row = db.prepare('SELECT ydoc_state FROM documents WHERE id = ?').get(docId);
+  const row = db.prepare('SELECT ydoc_state, content, title FROM documents WHERE id = ?').get(docId);
   if (row?.ydoc_state) {
     try { Y.applyUpdate(ydoc, row.ydoc_state); } catch (_) {}
   }
 
   // Auto-persist every 5 seconds when dirty
-  let dirty = false;
-  ydoc.on('update', () => { dirty = true; });
+  let persistDirty = false;
+  let revisionDirty = false;
+  let currentContent = row?.content || '';
+  let currentTitle = row?.title || 'Untitled';
+  let lastRevisionSignature = `${currentTitle}::${currentContent}`;
+  ydoc.on('update', () => { persistDirty = true; });
 
   const persistInterval = setInterval(() => {
-    if (!dirty) return;
-    dirty = false;
+    if (!persistDirty) return;
+    persistDirty = false;
     const state = Y.encodeStateAsUpdate(ydoc);
     const text = ydoc.getText('quill');
     const title = ydoc.getText('title');
+    const nextTitle = currentTitle || title.toString() || 'Untitled';
+    const nextContent = currentContent || text.toString();
     db.prepare(`
       UPDATE documents SET ydoc_state=?, content=?, title=?, updated_at=unixepoch()
       WHERE id=?
-    `).run(state, text.toString(), title.toString() || 'Untitled', docId);
+    `).run(state, nextContent, nextTitle, docId);
   }, 5000);
 
   // Snapshot every 30 seconds while dirty so history stays useful
   const snapshotInterval = setInterval(() => {
-    if (!dirty) return;
-    dirty = false;
+    if (!revisionDirty) return;
+    revisionDirty = false;
     const state = Y.encodeStateAsUpdate(ydoc);
-    const text = ydoc.getText('quill').toString();
-    const title = ydoc.getText('title').toString() || 'Untitled';
+    const text = currentContent || ydoc.getText('quill').toString();
+    const title = currentTitle || ydoc.getText('title').toString() || 'Untitled';
     const existing = db.prepare('SELECT id FROM documents WHERE id=?').get(docId);
-    if (existing && text.length > 0) {
+    const signature = `${title}::${text}`;
+    if (existing && text.length > 0 && signature !== lastRevisionSignature) {
       db.prepare('INSERT INTO revisions (doc_id, snapshot, content, title) VALUES (?,?,?,?)')
         .run(docId, state, text, title);
+      lastRevisionSignature = signature;
     }
-  }, 30000);
+  }, 10000);
 
-  const entry = { ydoc, awareness, connections: new Set(), persistInterval, snapshotInterval };
+  const entry = {
+    ydoc,
+    awareness,
+    connections: new Set(),
+    persistInterval,
+    snapshotInterval,
+    get currentContent() {
+      return currentContent;
+    },
+    set currentContent(value) {
+      currentContent = value;
+    },
+    get currentTitle() {
+      return currentTitle;
+    },
+    set currentTitle(value) {
+      currentTitle = value;
+    },
+    markPersistDirty() {
+      persistDirty = true;
+    },
+    markRevisionDirty() {
+      revisionDirty = true;
+    },
+    setLastRevisionSignature(value) {
+      lastRevisionSignature = value;
+    },
+    getLastRevisionSignature() {
+      return lastRevisionSignature;
+    },
+  };
   
   // Real-time synchronization broadcast
   ydoc.on('update', (update, origin) => {
-    dirty = true;
+    persistDirty = true;
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
     syncProtocol.writeUpdate(encoder, update);
@@ -123,10 +194,16 @@ function closeDoc(docId) {
   if (entry.connections.size === 0) {
     // Final persist
     const state = Y.encodeStateAsUpdate(entry.ydoc);
-    const text = entry.ydoc.getText('quill').toString();
-    const title = entry.ydoc.getText('title').toString() || 'Untitled';
+    const text = entry.currentContent || entry.ydoc.getText('quill').toString();
+    const title = entry.currentTitle || entry.ydoc.getText('title').toString() || 'Untitled';
     db.prepare(`UPDATE documents SET ydoc_state=?, content=?, title=?, updated_at=unixepoch() WHERE id=?`)
       .run(state, text, title, docId);
+    const signature = `${title}::${text}`;
+    if (text.length > 0 && signature !== entry.getLastRevisionSignature()) {
+      db.prepare('INSERT INTO revisions (doc_id, snapshot, content, title) VALUES (?,?,?,?)')
+        .run(docId, state, text, title);
+      entry.setLastRevisionSignature(signature);
+    }
     clearInterval(entry.persistInterval);
     clearInterval(entry.snapshotInterval);
     entry.ydoc.destroy();
@@ -140,6 +217,34 @@ const MESSAGE_AWARENESS = 1;
 const MESSAGE_CHAT = 2;
 const MESSAGE_CHAT_HISTORY = 3;
 const MESSAGE_CONTENT = 4;
+const MESSAGE_PRESENCE = 5;
+
+function getPresenceSnapshot(awareness) {
+  const users = [];
+  awareness.getStates().forEach((state, clientId) => {
+    if (state?.name) {
+      users.push({
+        clientId,
+        name: state.name,
+        color: state.color || '#5cbce0',
+        cursor: state.cursor || null,
+      });
+    }
+  });
+  return users;
+}
+
+function broadcastPresence(connections, awareness) {
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, MESSAGE_PRESENCE);
+  encoding.writeVarString(enc, JSON.stringify(getPresenceSnapshot(awareness)));
+  const msg = encoding.toUint8Array(enc);
+  connections.forEach((conn) => {
+    if (conn.readyState === WebSocket.OPEN) {
+      conn.send(msg);
+    }
+  });
+}
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 
@@ -154,6 +259,7 @@ wss.on('connection', (ws, req) => {
   const { ydoc, awareness, connections } = getOrCreateDoc(doc.id);
   connections.add(ws);
   ws._docId = doc.id;
+  ws._awarenessClientIds = new Set();
 
   // Send sync step 1
   const encoder = encoding.createEncoder();
@@ -169,6 +275,7 @@ wss.on('connection', (ws, req) => {
     encoding.writeVarUint8Array(enc2, awarenessProtocol.encodeAwarenessUpdate(awareness, [...awarenessStates.keys()]));
     ws.send(encoding.toUint8Array(enc2));
   }
+  broadcastPresence(connections, awareness);
 
   // Send recent chat history (last 50 messages)
   const messages = db.prepare(
@@ -215,6 +322,14 @@ wss.on('connection', (ws, req) => {
       // broadcasted via the ydoc.on('update') listener in getOrCreateDoc.
     } else if (msgType === MESSAGE_AWARENESS) {
       const update = decoding.readVarUint8Array(decoder);
+      const awarenessDecoder = decoding.createDecoder(update);
+      const updateLen = decoding.readVarUint(awarenessDecoder);
+      for (let i = 0; i < updateLen; i += 1) {
+        const clientId = decoding.readVarUint(awarenessDecoder);
+        ws._awarenessClientIds.add(clientId);
+        decoding.readVarUint(awarenessDecoder);
+        decoding.readVarString(awarenessDecoder);
+      }
       awarenessProtocol.applyAwarenessUpdate(awareness, update, ws);
       // Broadcast awareness to everyone else
       const enc = encoding.createEncoder();
@@ -222,6 +337,7 @@ wss.on('connection', (ws, req) => {
       encoding.writeVarUint8Array(enc, update);
       const msg = encoding.toUint8Array(enc);
       connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
+      broadcastPresence(connections, awareness);
     } else if (msgType === MESSAGE_CHAT) {
       const payload = JSON.parse(decoding.readVarString(decoder));
       // Persist
@@ -241,7 +357,14 @@ wss.on('connection', (ws, req) => {
       connections.forEach(conn => { if (conn.readyState === WebSocket.OPEN) conn.send(msg); });
     } else if (msgType === MESSAGE_CONTENT) {
       const payload = JSON.parse(decoding.readVarString(decoder));
-      const title = payload.title || db.prepare('SELECT title FROM documents WHERE id=?').get(doc.id)?.title || 'Untitled';
+      const title = payload.title || docs.get(doc.id)?.currentTitle || db.prepare('SELECT title FROM documents WHERE id=?').get(doc.id)?.title || 'Untitled';
+      const docEntry = docs.get(doc.id);
+      if (docEntry) {
+        docEntry.currentContent = payload.html || '';
+        docEntry.currentTitle = title;
+        docEntry.markPersistDirty();
+        docEntry.markRevisionDirty();
+      }
       db.prepare('UPDATE documents SET content=?, title=?, updated_at=unixepoch() WHERE id=?')
         .run(payload.html || '', title, doc.id);
       const currentDoc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(doc.id);
@@ -263,8 +386,20 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    if (ws._awarenessClientIds?.size) {
+      const ids = [...ws._awarenessClientIds];
+      awarenessProtocol.removeAwarenessStates(awareness, ids, ws);
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_AWARENESS);
+      encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(awareness, ids));
+      const msg = encoding.toUint8Array(enc);
+      connections.forEach((conn) => {
+        if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg);
+      });
+    }
     awareness.off('change', awarenessChangeHandler);
     connections.delete(ws);
+    broadcastPresence(connections, awareness);
     setTimeout(() => closeDoc(doc.id), 30000);
   });
 });
@@ -363,6 +498,15 @@ app.patch('/api/docs/:id', authRequired, async (req, res) => {
   const nextTitle = typeof title === 'string' ? title : current?.title;
   const nextContent = typeof content === 'string' ? content : current?.content;
   db.prepare('UPDATE documents SET title=?, content=?, updated_at=unixepoch() WHERE id=?').run(nextTitle, nextContent, id);
+  const liveDoc = docs.get(id);
+  if (liveDoc) {
+    liveDoc.currentTitle = nextTitle || 'Untitled';
+    liveDoc.currentContent = nextContent || '';
+    liveDoc.markPersistDirty();
+    if (typeof content === 'string') {
+      liveDoc.markRevisionDirty();
+    }
+  }
   await mirrorDocumentToSupabase({ ...doc, title: nextTitle, content: nextContent }).catch(() => {});
   res.json({ ok: true });
 });
@@ -384,6 +528,15 @@ app.get('/api/docs/:id/revisions', authRequired, (req, res) => {
   res.json(rows);
 });
 
+app.get('/api/docs/:id/revisions/:revId', authRequired, (req, res) => {
+  const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
+  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
+  const revision = db.prepare('SELECT id, title, content, created_at FROM revisions WHERE id=? AND doc_id=?')
+    .get(req.params.revId, req.params.id);
+  if (!revision) return res.status(404).json({ error: 'Not found' });
+  res.json({ revision });
+});
+
 // Restore revision
 app.post('/api/docs/:id/revisions/:revId/restore', authRequired, async (req, res) => {
   const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(req.params.id);
@@ -392,9 +545,12 @@ app.post('/api/docs/:id/revisions/:revId/restore', authRequired, async (req, res
   if (!rev) return res.status(404).json({ error: 'Not found' });
 
   const restoredState = encodeDocStateFromContent(rev.content, rev.title);
-
   const docEntry = docs.get(req.params.id);
+
   if (docEntry) {
+    docEntry.currentTitle = rev.title || 'untitled';
+    docEntry.currentContent = rev.content || '';
+    docEntry.markPersistDirty();
     docEntry.ydoc.transact(() => {
       const ytext = docEntry.ydoc.getText('quill');
       const ytitle = docEntry.ydoc.getText('title');
@@ -403,15 +559,63 @@ app.post('/api/docs/:id/revisions/:revId/restore', authRequired, async (req, res
       ytext.insert(0, rev.content || '');
       ytitle.insert(0, rev.title || 'untitled');
     }, 'restore');
+
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, MESSAGE_CONTENT);
+    encoding.writeVarString(enc, JSON.stringify({
+      html: rev.content || '',
+      updated_at: Math.floor(Date.now() / 1000),
+      restored_from_revision_id: req.params.revId,
+    }));
+    const message = encoding.toUint8Array(enc);
+    docEntry.connections.forEach((conn) => {
+      if (conn.readyState === WebSocket.OPEN) {
+        conn.send(message);
+      }
+    });
   }
   db.prepare('UPDATE documents SET ydoc_state=?, content=?, title=?, updated_at=unixepoch() WHERE id=?')
     .run(restoredState, rev.content, rev.title, req.params.id);
+  db.prepare('INSERT INTO revisions (doc_id, snapshot, content, title) VALUES (?,?,?,?)')
+    .run(req.params.id, restoredState, rev.content || '', rev.title || 'untitled');
+  docEntry?.setLastRevisionSignature(`${rev.title || 'untitled'}::${rev.content || ''}`);
   await mirrorDocumentToSupabase({ ...doc, title: rev.title, content: rev.content }).catch(() => {});
   res.json({ ok: true });
 });
 
 // AI: Analyze / summarize text (SSE stream)
+app.post('/api/ai/command', async (req, res) => {
+  if (!ensureGroqConfigured(res)) return;
+  const instruction = String(req.body?.instruction || '').trim().slice(0, 2000);
+  const selectionText = String(req.body?.selectionText || '').trim();
+  const documentText = String(req.body?.documentText || '').slice(0, 20000);
+
+  if (!instruction) return res.status(400).json({ error: 'instruction is required' });
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: AI_MODEL,
+      messages: [{ role: 'user', content: buildAiCommandPrompt(instruction, selectionText, documentText) }],
+      temperature: 0.5,
+      max_tokens: 1024,
+      stream: false,
+    });
+
+    const output = completion.choices?.[0]?.message?.content?.trim() || '';
+    if (!output) {
+      return res.status(502).json({ error: 'Groq returned empty output.' });
+    }
+
+    res.json({ output, model: AI_MODEL });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err.message || 'AI command failed', model: AI_MODEL });
+  }
+});
+
 app.post('/api/ai/analyze', async (req, res) => {
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(503).json({ error: 'GROQ_API_KEY is missing in backend/.env' });
+  }
   const { text, action } = req.body;
   if (!text || !action) return res.status(400).json({ error: 'text and action required' });
 
@@ -419,6 +623,7 @@ app.post('/api/ai/analyze', async (req, res) => {
     summarize: `Summarize this text concisely in a few sentences. Return ONLY the summary, no preamble:\n\n${text}`,
     explain: `Explain this text simply as if to a beginner. Return ONLY the explanation:\n\n${text}`,
     improve: `Improve the clarity and flow of this text while keeping the exact same meaning. Return ONLY the improved text, no preamble or explanation:\n\n${text}`,
+    professional: `Rewrite this text in a more professional, polished, and concise tone while preserving the core meaning. Return ONLY the rewritten text, no preamble or explanation:\n\n${text}`,
     translate: `Translate this text to Spanish. Return ONLY the translation:\n\n${text}`,
     bullets: `Convert this text into a clear, concise bulleted list using '- ' for each bullet. Return ONLY the bullet list, no intro text:\n\n${text}`,
     table: `Convert the following data/text into a well-formatted markdown table with headers. Return ONLY the markdown table:\n\n${text}`,
@@ -434,7 +639,7 @@ app.post('/api/ai/analyze', async (req, res) => {
 
   try {
     const stream = await groq.chat.completions.create({
-      model: 'llama3-70b-8192',
+      model: AI_MODEL,
       messages: [{ role: 'user', content: prompt }],
       stream: true,
     });
@@ -445,10 +650,51 @@ app.post('/api/ai/analyze', async (req, res) => {
       }
     }
   } catch (err) {
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: err.message || 'AI analyze failed', model: AI_MODEL })}\n\n`);
   }
   res.write('data: [DONE]\n\n');
   res.end();
+});
+
+app.post('/api/ai/autocomplete', async (req, res) => {
+  if (!ensureGroqConfigured(res)) return;
+  const { documentText } = req.body;
+  if (!documentText || !String(documentText).trim()) {
+    return res.status(400).json({ error: 'documentText is required' });
+  }
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: AI_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are an AI writing assistant providing ghost text autocomplete.',
+            'Given the text before the cursor, suggest only the next few words or continuation.',
+            'Rules:',
+            '- Return ONLY the completion text.',
+            '- DO NOT repeat the input text.',
+            '- DO NOT use markdown.',
+            '- Keep it short, ideally under 15 words.',
+            '- Match the existing tone and style exactly.',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: documentText,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 64,
+      stream: false,
+    });
+
+    const output = completion.choices?.[0]?.message?.content?.trim() || '';
+    res.json({ output, model: AI_MODEL });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err.message || 'Autocomplete failed', model: AI_MODEL });
+  }
 });
 
 // Health check

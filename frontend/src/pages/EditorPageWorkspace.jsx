@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { EditorContent } from '@tiptap/react'
-import { ArrowLeft, MessageSquare, Sparkles, Clock, Check, FileText } from 'lucide-react'
-import { getDoc, getSessionUser, streamAI, updateDocContent, updateDocTitle } from '../lib/api'
+import { MessageSquare, Sparkles, Clock, Check, NotebookPen, Users, Sun, Moon } from 'lucide-react'
+import { aiCommand, getDoc, getSessionUser, streamAI, updateDocContent, updateDocTitle } from '../lib/api'
 import { setLocalUser } from '../lib/colors'
 import { useCollabEditor } from '../hooks/useCollabEditorEnhanced'
 import PresenceBar from '../components/PresenceBar'
 import Toolbar from '../components/ToolbarRich'
 import ChatPanel from '../components/ChatPanel'
-import RevisionPanel from '../components/RevisionPanel'
+import RevisionPanel from '../components/RevisionPanelModern'
 import RemoteCursors from '../components/RemoteCursorsTiptap'
 import SelectionBubbleMenu from '../components/SelectionBubbleMenu'
 import SlashMenu from '../components/SlashMenu'
@@ -42,6 +42,53 @@ function getActiveOutlineIndex(editor, outline) {
   return active
 }
 
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function simpleMarkdownToHtml(text = '') {
+  const lines = String(text).split('\n')
+  let html = ''
+  let inList = false
+
+  const closeList = () => {
+    if (inList) {
+      html += '</ul>'
+      inList = false
+    }
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) {
+      closeList()
+      continue
+    }
+
+    const checklistMatch = line.match(/^[-*]\s+\[( |x|X)\]\s+(.*)$/)
+    const bulletMatch = line.match(/^[-*]\s+(.*)$/)
+
+    if (checklistMatch || bulletMatch) {
+      if (!inList) {
+        html += '<ul>'
+        inList = true
+      }
+      const content = checklistMatch ? checklistMatch[2] : bulletMatch[1]
+      html += `<li>${escapeHtml(content)}</li>`
+      continue
+    }
+
+    closeList()
+    html += `<p>${escapeHtml(line)}</p>`
+  }
+
+  closeList()
+  return html || `<p>${escapeHtml(text)}</p>`
+}
+
 export default function EditorPage() {
   const { token } = useParams()
   const navigate = useNavigate()
@@ -55,19 +102,20 @@ export default function EditorPage() {
   const [title, setTitle] = useState('untitled')
   const [chatMessages, setChatMessages] = useState([])
   const [isAiLoading, setIsAiLoading] = useState(false)
-  const [ghostText, setGhostText] = useState('')
-  const [ghostPos, setGhostPos] = useState({ top: 0, left: 0 })
   const [slashMenu, setSlashMenu] = useState({ visible: false, x: 0, y: 0, query: '' })
   const [outline, setOutline] = useState([])
   const [activeOutlineIndex, setActiveOutlineIndex] = useState(null)
   const [showOutline, setShowOutline] = useState(true)
+  const [ghostText, setGhostText] = useState('')
+  const [ghostPos, setGhostPos] = useState({ top: 0, left: 0, maxWidth: 320 })
+  const [pageTheme, setPageTheme] = useState(() => window.localStorage.getItem('page-theme') || 'light')
 
-  const ghostCursorIndexRef = useRef(null)
-  const autocompleteTimerRef = useRef(null)
-  const isAutocompleting = useRef(false)
-  const abortControllerRef = useRef(null)
   const titleTimerRef = useRef(null)
   const contentTimerRef = useRef(null)
+  const autocompleteTimerRef = useRef(null)
+  const abortControllerRef = useRef(null)
+  const isAutocompletingRef = useRef(false)
+  const ghostCursorPosRef = useRef(null)
   const onChatMessage = useCallback((msg) => setChatMessages((prev) => [...prev, msg]), [])
   const onChatHistory = useCallback((history) => setChatMessages(history), [])
 
@@ -85,19 +133,6 @@ export default function EditorPage() {
     onChatMessage,
     onChatHistory,
   })
-
-  const clearGhost = useCallback(() => {
-    setGhostText('')
-    ghostCursorIndexRef.current = null
-  }, [])
-
-  const updateGhostPosition = useCallback(() => {
-    const nextEditor = getEditor()
-    if (!nextEditor) return
-    const pos = nextEditor.state.selection.from
-    const coords = nextEditor.view.coordsAtPos(pos)
-    setGhostPos({ top: coords.top, left: coords.left })
-  }, [getEditor])
 
   const refreshOutline = useCallback(() => {
     const nextEditor = getEditor()
@@ -119,41 +154,65 @@ export default function EditorPage() {
     `).run()
   }, [getEditor])
 
-  const triggerAutocomplete = useCallback(async () => {
+  const clearGhost = useCallback(() => {
+    setGhostText('')
+    ghostCursorPosRef.current = null
     const nextEditor = getEditor()
-    if (!nextEditor || isAutocompleting.current) return
-    const selection = nextEditor.state.selection
-    const context = nextEditor.state.doc.textBetween(0, selection.from, '\n', '\n').trim()
-    if (context.length < 24) return
+    nextEditor?.storage?.aiAutocomplete?.clearSuggestion?.()
+  }, [getEditor])
+
+  const updateGhostPosition = useCallback((position = null) => {
+    const nextEditor = getEditor()
+    if (!nextEditor) return
+    const cursorPos = position ?? nextEditor.state.selection.from
+
+    try {
+      const coords = nextEditor.view.coordsAtPos(cursorPos)
+      const pageEl = nextEditor.view.dom.closest('.tiptap-page') || nextEditor.view.dom
+      const pageRect = pageEl.getBoundingClientRect()
+      setGhostPos({
+        top: coords.bottom + 6,
+        left: coords.left,
+        maxWidth: Math.max(220, pageRect.right - coords.left - 48),
+      })
+    } catch (_) {}
+  }, [getEditor])
+
+  const triggerAutocomplete = useCallback(async (force = false) => {
+    const nextEditor = getEditor()
+    if (!nextEditor || isAutocompletingRef.current) return
+    if (!nextEditor.state.selection.empty) return
 
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
-
-    isAutocompleting.current = true
-    ghostCursorIndexRef.current = selection.from
-    updateGhostPosition()
-
-    let preview = ''
+    isAutocompletingRef.current = true
+    ghostCursorPosRef.current = nextEditor.state.selection.from
+    setGhostText('')
+    updateGhostPosition(ghostCursorPosRef.current)
+    setIsAiLoading(true)
     try {
-      await streamAI(context, 'continue', (chunk) => {
-        preview += chunk
-        setGhostText(preview)
-        updateGhostPosition()
-      }, controller.signal)
+      if (force) {
+        await nextEditor.storage.aiAutocomplete?.requestSuggestion?.()
+      }
     } catch (_) {
-      if (!controller.signal.aborted) clearGhost()
+      if (!controller.signal.aborted) {
+        setGhostText('')
+      }
     } finally {
-      isAutocompleting.current = false
-      if (!preview) clearGhost()
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null
+      }
+      isAutocompletingRef.current = false
+      setIsAiLoading(false)
     }
   }, [clearGhost, getEditor, updateGhostPosition])
 
   const acceptGhost = useCallback(() => {
     const nextEditor = getEditor()
-    const index = ghostCursorIndexRef.current
-    if (!nextEditor || !ghostText || index == null) return
-    nextEditor.chain().focus(index).insertContent(ghostText).run()
+    const cursorPos = ghostCursorPosRef.current
+    if (!nextEditor || !ghostText || cursorPos == null) return
+    nextEditor.commands.acceptSuggestion?.()
     clearGhost()
   }, [clearGhost, getEditor, ghostText])
 
@@ -211,7 +270,17 @@ export default function EditorPage() {
     return () => clearInterval(timer)
   }, [doc, getYdoc, title])
 
-  useEffect(() => () => clearTimeout(contentTimerRef.current), [])
+  useEffect(() => {
+    return () => {
+      clearTimeout(contentTimerRef.current)
+      clearTimeout(autocompleteTimerRef.current)
+      abortControllerRef.current?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem('page-theme', pageTheme)
+  }, [pageTheme])
 
   useEffect(() => {
     if (!doc) return
@@ -221,8 +290,15 @@ export default function EditorPage() {
       nextEditor.__livedraftEnhanced = true
 
       const handleTextChange = () => {
-        clearGhost()
         refreshOutline()
+        const suggestion = nextEditor.storage.aiAutocomplete?.suggestion || ''
+        if (suggestion) {
+          ghostCursorPosRef.current = nextEditor.state.selection.from
+          setGhostText(suggestion)
+          updateGhostPosition(nextEditor.state.selection.from)
+        } else {
+          setGhostText('')
+        }
 
         const selection = nextEditor.state.selection
         const text = nextEditor.state.doc.textBetween(0, selection.from, '\n', '\n')
@@ -244,16 +320,27 @@ export default function EditorPage() {
 
         setSlashMenu((current) => (current.visible ? { ...current, visible: false } : current))
         clearTimeout(autocompleteTimerRef.current)
+        if (!selection.empty) return
         autocompleteTimerRef.current = setTimeout(() => {
-          if (!isAutocompleting.current) {
-            triggerAutocomplete()
+          if (!isAutocompletingRef.current) {
+            nextEditor.storage.aiAutocomplete?.requestSuggestion?.()
           }
-        }, 1100)
+        }, 1800)
       }
 
       const handleSelectionChange = () => {
-        if (ghostText) updateGhostPosition()
         refreshOutline()
+        const suggestion = nextEditor.storage.aiAutocomplete?.suggestion || ''
+        if (nextEditor.state.selection.empty) {
+          if (suggestion) {
+            ghostCursorPosRef.current = nextEditor.state.selection.from
+            setGhostText(suggestion)
+            updateGhostPosition(nextEditor.state.selection.from)
+          }
+        } else {
+          clearTimeout(autocompleteTimerRef.current)
+          clearGhost()
+        }
       }
 
       nextEditor.on('update', handleTextChange)
@@ -277,6 +364,7 @@ export default function EditorPage() {
   const runAiTransform = useCallback(async (action, { mode = 'append', label = 'AI Suggestion:' } = {}) => {
     const nextEditor = getEditor()
     if (!nextEditor) return
+    abortControllerRef.current?.abort()
     clearGhost()
 
     const selection = nextEditor.state.selection
@@ -299,6 +387,64 @@ export default function EditorPage() {
         const insertAt = selection.to
         insertAiBlock(label, output, insertAt)
       }
+    } catch (_) {
+      window.alert('AI action failed. Please try again.')
+    } finally {
+      setIsAiLoading(false)
+    }
+  }, [clearGhost, getEditor, insertAiBlock])
+
+  const runAiCommand = useCallback(async ({
+    instruction,
+    requireSelection = true,
+    mode = 'append',
+    label = 'AI Suggestion:',
+    renderMarkdown = false,
+  }) => {
+    const nextEditor = getEditor()
+    if (!nextEditor) return
+
+    abortControllerRef.current?.abort()
+    clearGhost()
+
+    const selection = nextEditor.state.selection
+    const selectedText = selection.from !== selection.to
+      ? nextEditor.state.doc.textBetween(selection.from, selection.to, '\n', '\n')
+      : ''
+
+    if (requireSelection && !selectedText.trim()) {
+      window.alert('Please select text first.')
+      return
+    }
+
+    const documentText = nextEditor.getText().trim()
+    setIsAiLoading(true)
+    try {
+      const output = await aiCommand(instruction, selectedText, documentText)
+      if (!output.trim()) return
+      const finalOutput = renderMarkdown ? simpleMarkdownToHtml(output) : output
+
+      if (mode === 'replace') {
+        nextEditor.chain().focus().insertContentAt({ from: selection.from, to: selection.to }, finalOutput).run()
+      } else if (mode === 'insert-after-selection') {
+        if (renderMarkdown) {
+          nextEditor.chain().focus().insertContent(`
+            <blockquote>
+              <p><strong><em>${label}</em></strong></p>
+              ${finalOutput}
+            </blockquote>
+            <p></p>
+          `).run()
+        } else {
+          insertAiBlock(label, finalOutput, selection.to)
+        }
+      } else if (mode === 'insert-after-cursor') {
+        nextEditor.chain().focus().insertContentAt(selection.to, renderMarkdown ? finalOutput : ` ${finalOutput}`).run()
+      } else {
+        insertAiBlock(label, finalOutput, selection.to)
+      }
+    } catch (_) {
+      window.alert('AI action failed. Please try again.')
     } finally {
       setIsAiLoading(false)
     }
@@ -309,40 +455,64 @@ export default function EditorPage() {
     summarize: () => {
       const nextEditor = getEditor()
       const selection = nextEditor?.state.selection
-      if (!nextEditor || !selection || selection.from === selection.to) return
+      if (!nextEditor || !selection || selection.from === selection.to) {
+        window.alert('Please select text to summarize.')
+        return
+      }
       return runAiTransform('summarize', { mode: 'append', label: 'AI Summary:' })
     },
     refine: () => {
       const nextEditor = getEditor()
       const selection = nextEditor?.state.selection
-      if (!nextEditor || !selection || selection.from === selection.to) return
+      if (!nextEditor || !selection || selection.from === selection.to) {
+        window.alert('Please select text to refine.')
+        return
+      }
       return runAiTransform('improve', { mode: 'replace', label: 'AI Refinement:' })
     },
-    bullets: () => {
+    professionalRephrase: () => {
       const nextEditor = getEditor()
       const selection = nextEditor?.state.selection
-      if (!nextEditor || !selection || selection.from === selection.to) return
-      return runAiTransform('bullets', { mode: 'replace' })
-    },
-    table: () => {
-      const nextEditor = getEditor()
-      const selection = nextEditor?.state.selection
-      if (!nextEditor || !selection || selection.from === selection.to) return
-      return runAiTransform('table', { mode: 'append', label: 'AI Table:' })
-    },
-    continueWriting: async () => {
-      const nextEditor = getEditor()
-      if (!nextEditor) return
-      clearGhost()
-      const selection = nextEditor.state.selection
-      ghostCursorIndexRef.current = selection.from
-      updateGhostPosition()
-      setIsAiLoading(true)
-      try {
-        await triggerAutocomplete()
-      } finally {
-        setIsAiLoading(false)
+      if (!nextEditor || !selection || selection.from === selection.to) {
+        window.alert('Please select text to rephrase.')
+        return
       }
+      return runAiTransform('professional', { mode: 'replace', label: 'AI Professional Rephrase:' })
+    },
+    translateHindi: () => runAiCommand({
+      instruction: 'Translate the selected text to professional Hindi while preserving technical terms in English where appropriate.',
+      requireSelection: true,
+      mode: 'insert-after-selection',
+      label: 'Hindi Translation:',
+    }),
+    extractActionItems: () => runAiCommand({
+      instruction: 'Extract a list of actionable tasks or next steps from the selected text as a concise checklist.',
+      requireSelection: true,
+      mode: 'insert-after-selection',
+      label: 'Action Items:',
+      renderMarkdown: true,
+    }),
+    brainstormIdeas: () => runAiCommand({
+      instruction: 'Provide five unique and creative ideas or extensions related to the selected topic.',
+      requireSelection: true,
+      mode: 'insert-after-selection',
+      label: 'AI Brainstorm:',
+      renderMarkdown: true,
+    }),
+    codeCritic: () => runAiCommand({
+      instruction: 'Analyze the selected code or technical text and provide brief, punchy suggestions for improvement or potential bug fixes.',
+      requireSelection: true,
+      mode: 'insert-after-selection',
+      label: 'Code Critic:',
+    }),
+    toneAnalysis: () => runAiCommand({
+      instruction: 'Analyze the tone of the selected text and provide a concise one-sentence summary.',
+      requireSelection: true,
+      mode: 'insert-after-selection',
+      label: 'Tone Analysis:',
+    }),
+    continueWriting: async () => {
+      await triggerAutocomplete(true)
     },
   }
 
@@ -368,6 +538,8 @@ export default function EditorPage() {
   const handleSlashSelect = useCallback((command) => {
     const nextEditor = getEditor()
     if (!nextEditor) return
+    abortControllerRef.current?.abort()
+    clearGhost()
     const selection = nextEditor.state.selection
     const text = nextEditor.state.doc.textBetween(0, selection.from, '\n', '\n')
     const lastSlash = text.lastIndexOf('/')
@@ -376,7 +548,6 @@ export default function EditorPage() {
     }
 
     setSlashMenu((current) => ({ ...current, visible: false }))
-    clearGhost()
 
     setTimeout(() => {
       if (command.isAI) {
@@ -403,20 +574,18 @@ export default function EditorPage() {
     return nextEditor.getText().trim().split(/\s+/).filter(Boolean).length
   }, [getEditor])
 
+  const collaboratorCount = Math.max(1, users.length)
+
   useEffect(() => {
     const handler = (event) => {
-      if (event.key === 'Tab' && ghostCursorIndexRef.current !== null) {
+      if (event.key === 'Tab' && ghostText) {
         event.preventDefault()
         acceptGhost()
-        return
       }
 
       if (event.key === 'Escape') {
-        if (ghostCursorIndexRef.current !== null) {
-          clearGhost()
-          abortControllerRef.current?.abort()
-          isAutocompleting.current = false
-        }
+        abortControllerRef.current?.abort()
+        clearGhost()
         setSlashMenu((current) => ({ ...current, visible: false }))
       }
 
@@ -434,7 +603,22 @@ export default function EditorPage() {
 
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [acceptGhost, clearGhost])
+  }, [acceptGhost, clearGhost, editor, ghostText])
+
+  useEffect(() => {
+    const syncGhostPosition = () => {
+      if (ghostText && ghostCursorPosRef.current != null) {
+        updateGhostPosition(ghostCursorPosRef.current)
+      }
+    }
+
+    window.addEventListener('resize', syncGhostPosition)
+    window.addEventListener('scroll', syncGhostPosition, true)
+    return () => {
+      window.removeEventListener('resize', syncGhostPosition)
+      window.removeEventListener('scroll', syncGhostPosition, true)
+    }
+  }, [ghostText, updateGhostPosition])
 
   if (loading) {
     return (
@@ -475,12 +659,11 @@ export default function EditorPage() {
             className="group flex shrink-0 items-center gap-3"
             title="Back to dashboard"
           >
-            <div className="flex h-11 w-11 items-center justify-center rounded-[18px] bg-accent-soft border border-accent-color/20 shadow-[0_14px_32px_rgba(59,130,246,0.18)] transition-transform group-hover:-translate-y-0.5">
-              <FileText size={20} className="text-accent-color" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-[18px] bg-accent-soft border border-accent-color/20 shadow-[0_14px_32px_rgba(59,130,246,0.18)] transition-transform group-hover:-translate-y-0.5">
+              <NotebookPen size={22} className="text-accent-color" />
             </div>
-            <div className="hidden pr-2 sm:block">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.32em] text-text-muted">LiveDraft</p>
-              <p className="text-sm font-semibold text-text-primary">Writing studio</p>
+            <div className="hidden pr-2 sm:flex sm:items-center">
+              <p className="text-[1.65rem] font-semibold tracking-[-0.03em] text-white">LiveDraft</p>
             </div>
           </button>
           <div className="hidden h-8 w-px bg-white/[0.08] sm:block" />
@@ -521,6 +704,20 @@ export default function EditorPage() {
             <Clock size={16} />
           </button>
 
+          <div className="hidden items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs font-semibold text-text-primary md:flex">
+            <Users size={14} className="text-accent-color" />
+            <span>{collaboratorCount} live</span>
+          </div>
+
+          <button
+            onClick={() => setPageTheme((value) => (value === 'light' ? 'dark' : 'light'))}
+            className="hidden items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs font-semibold text-text-primary transition-colors hover:bg-white/[0.06] md:flex"
+            title="Toggle page theme"
+          >
+            {pageTheme === 'light' ? <Moon size={14} className="text-text-secondary" /> : <Sun size={14} className="text-amber-300" />}
+            <span>{pageTheme === 'light' ? 'Page light' : 'Page dark'}</span>
+          </button>
+
           {isAiLoading && (
             <div className="ml-2 flex items-center gap-2 px-3 py-1 bg-accent-soft rounded-full border border-accent-color/20">
               <Sparkles size={12} className="text-accent-color animate-pulse" />
@@ -558,30 +755,35 @@ export default function EditorPage() {
 
       <div className="relative z-10 flex min-h-0 flex-1 gap-3 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
         {showOutline && (
-          <DocumentMap
-            outline={outline}
-            activeIndex={activeOutlineIndex}
-            onJump={jumpToOutline}
-            wordCount={wordCount()}
-            collaborators={users.length}
-          />
-        )}
+            <DocumentMap
+              outline={outline}
+              activeIndex={activeOutlineIndex}
+              onJump={jumpToOutline}
+              wordCount={wordCount()}
+              collaborators={collaboratorCount}
+            />
+          )}
 
         <div className="flex-1 flex">
           <div className="min-w-0 flex-1 flex-col gap-3">
             <div className="flex-1 rounded-[36px] border border-white/[0.05] bg-bg-secondary/55 shadow-[0_30px_60px_rgba(0,0,0,0.22)]">
-              <div className="mx-auto w-full max-w-[980px] px-3 py-4 sm:px-6 sm:py-5">
+              <div className="doc-canvas-bg mx-auto w-full max-w-[1100px] px-3 py-4 sm:px-6 sm:py-5">
                 <div className="rounded-[34px] border border-white/[0.05] bg-bg-secondary p-3 shadow-[0_20px_44px_rgba(0,0,0,0.20)] sm:p-4">
                   <div className="rounded-[30px] border border-white/[0.05] bg-[#fffdfa08] px-2 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:px-4 sm:py-4">
-                    <div className="mx-auto w-full max-w-[860px]">
-                      <div className="tiptap-page">
+                    <div className="doc-paper-shell mx-auto w-full">
+                      <div className={`doc-paper ${pageTheme === 'light' ? 'page-theme-light' : 'page-theme-dark'}`}>
+                        <div className={`tiptap-page ${pageTheme === 'light' ? 'page-theme-light' : 'page-theme-dark'}`}>
                         <SelectionBubbleMenu
                           editor={editor}
                           onSummarize={() => aiActionsRef.current?.summarize?.()}
                           onRefine={() => aiActionsRef.current?.refine?.()}
                           onContinue={() => aiActionsRef.current?.continueWriting?.()}
+                          onProfessional={() => aiActionsRef.current?.professionalRephrase?.()}
+                          onTranslate={() => aiActionsRef.current?.translateHindi?.()}
+                          onActionItems={() => aiActionsRef.current?.extractActionItems?.()}
                         />
                         <EditorContent editor={editor} className="h-full w-full" />
+                      </div>
                       </div>
                       {doc && (
                         <RemoteCursors users={users.filter((user) => user.cursor)} getEditor={getEditor} />
@@ -601,24 +803,6 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {ghostText && (
-        <div
-          className="ghost-suggestion"
-          style={{
-            position: 'fixed',
-            top: ghostPos.top,
-            left: ghostPos.left,
-            pointerEvents: 'none',
-            zIndex: 50,
-            lineHeight: '1.55',
-            fontSize: '15px',
-            fontFamily: 'Georgia, Times New Roman, serif',
-          }}
-        >
-          <span className="ghost-suggestion-text">{ghostText}</span>
-        </div>
-      )}
-
       {slashMenu.visible && (
         <SlashMenu
           position={{ x: slashMenu.x, y: slashMenu.y }}
@@ -626,6 +810,23 @@ export default function EditorPage() {
           onSelect={handleSlashSelect}
           onClose={() => setSlashMenu((current) => ({ ...current, visible: false }))}
         />
+      )}
+
+      {ghostText && (
+        <div
+          className="ghost-suggestion"
+          style={{
+            position: 'fixed',
+            top: ghostPos.top,
+            left: ghostPos.left,
+            maxWidth: `${ghostPos.maxWidth}px`,
+            zIndex: 45,
+            lineHeight: 1.7,
+            fontSize: '16px',
+          }}
+        >
+          <span className="ghost-suggestion-text">{ghostText}</span>
+        </div>
       )}
 
       {showHistory && (

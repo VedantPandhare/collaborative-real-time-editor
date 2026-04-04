@@ -105,10 +105,9 @@ export default function DashboardModern() {
             <div className="flex h-12 w-12 items-center justify-center rounded-[20px] border border-white/15 bg-white/[0.04] shadow-[0_18px_40px_rgba(59,130,246,0.12)]">
               <FileText size={22} className="text-white" />
             </div>
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-text-muted">LiveDraft</p>
-              <p className="text-2xl font-semibold text-white">Writing studio</p>
-            </div>
+              <div>
+                <p className="text-[1.75rem] font-semibold tracking-[-0.03em] text-white">LiveDraft</p>
+              </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -227,14 +226,24 @@ export default function DashboardModern() {
                 <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-text-muted">Document Library</p>
                 <h2 className="mt-3 text-2xl font-semibold text-white">Recent drafts and active documents</h2>
               </div>
-              <div className="relative w-full sm:max-w-xs">
-                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted" />
-                <input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search documents"
-                  className="w-full rounded-full border border-white/[0.08] bg-white/[0.04] py-3 pl-11 pr-4 text-sm text-white outline-none transition-colors placeholder:text-text-muted focus:border-accent-color/50"
-                />
+              <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+                <button
+                  onClick={() => newDoc()}
+                  disabled={creating}
+                  className="inline-flex items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-white/[0.08] disabled:opacity-60"
+                >
+                  <Plus size={16} />
+                  {creating ? 'Creating...' : 'Create document'}
+                </button>
+                <div className="relative w-full sm:w-[260px]">
+                  <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted" />
+                  <input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Search documents"
+                    className="w-full rounded-full border border-white/[0.08] bg-white/[0.04] py-3 pl-11 pr-4 text-sm text-white outline-none transition-colors placeholder:text-text-muted focus:border-accent-color/50"
+                  />
+                </div>
               </div>
             </div>
 

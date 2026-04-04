@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { FileText, Lock, Mail } from 'lucide-react'
 import { getAuthToken, signIn, signUp } from '../lib/api'
 
 export default function AuthPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const existingToken = getAuthToken()
   const [mode, setMode] = useState('signin')
   const [email, setEmail] = useState('')
@@ -12,12 +13,14 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const redirectTo = location.state?.redirectTo || '/app'
+
   const title = useMemo(() => (
     mode === 'signin' ? 'Welcome back to LiveDraft' : 'Create your LiveDraft account'
   ), [mode])
 
   if (existingToken) {
-    return <Navigate to="/app" replace />
+    return <Navigate to={redirectTo} replace />
   }
 
   const handleSubmit = async (event) => {
@@ -30,7 +33,7 @@ export default function AuthPage() {
       } else {
         await signUp(email, password)
       }
-      navigate('/app', { replace: true })
+      navigate(redirectTo, { replace: true })
     } catch (err) {
       setError(err.message || 'Authentication failed')
     } finally {
