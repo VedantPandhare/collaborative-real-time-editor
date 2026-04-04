@@ -10,7 +10,7 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import * as map from 'lib0/map';
-import Anthropic from '@anthropic-ai/sdk';
+import Groq from 'groq-sdk';
 import db from './db.js';
 
 const app = express();
@@ -19,8 +19,8 @@ const server = createServer(app);
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 
-// ─── Anthropic Client ────────────────────────────────────────────────────────
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || '' });
+// ─── Groq Client ────────────────────────────────────────────────────────
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || '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' });
 
 // ─── Y-Doc Store ─────────────────────────────────────────────────────────────
 const docs = new Map(); // docId → { ydoc, awareness, connections }
@@ -70,6 +70,23 @@ function getOrCreateDoc(docId) {
   }, 120000);
 
   const entry = { ydoc, awareness, connections: new Set(), persistInterval, snapshotInterval };
+  
+  // Real-time synchronization broadcast
+  ydoc.on('update', (update, origin) => {
+    dirty = true;
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    syncProtocol.writeUpdate(encoder, update);
+    const message = encoding.toUint8Array(encoder);
+
+    entry.connections.forEach(conn => {
+      // Broadcast to all clients EXCEPT the one that generated the update
+      if (conn !== origin && conn.readyState === WebSocket.OPEN) {
+        conn.send(message);
+      }
+    });
+  });
+
   docs.set(docId, entry);
   return entry;
 }
@@ -158,6 +175,7 @@ wss.on('connection', (ws, req) => {
     if (msgType === MESSAGE_SYNC) {
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MESSAGE_SYNC);
+      // Passing `ws` as the transaction origin applies the update and triggers ydoc.on('update') with origin === ws
       const syncMsgType = syncProtocol.readSyncMessage(decoder, encoder, ydoc, ws);
       
       if (syncMsgType === syncProtocol.messageYjsSyncStep1) {
@@ -165,16 +183,9 @@ wss.on('connection', (ws, req) => {
         if (encoding.length(encoder) > 1) {
           ws.send(encoding.toUint8Array(encoder));
         }
-      } else if (syncMsgType === syncProtocol.messageYjsSyncStep2 || syncMsgType === syncProtocol.messageYjsSyncUpdate) {
-        // Broadcast the update (Step 2 or regular Update) to all other connections
-        // We reuse the original incoming data for efficiency if possible
-        const msg = uint8; // This contains [MESSAGE_SYNC, ...SyncData]
-        connections.forEach(conn => {
-          if (conn !== ws && conn.readyState === WebSocket.OPEN) {
-            conn.send(msg);
-          }
-        });
       }
+      // Note: syncProtocol.messageYjsSyncStep2 and messageYjsSyncUpdate are automatically 
+      // broadcasted via the ydoc.on('update') listener in getOrCreateDoc.
     } else if (msgType === MESSAGE_AWARENESS) {
       const update = decoding.readVarUint8Array(decoder);
       awarenessProtocol.applyAwarenessUpdate(awareness, update, ws);
@@ -291,23 +302,15 @@ app.post('/api/ai/analyze', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
 
   try {
-    if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'your_key_here') {
-      // Demo mode
-      const demo = `[AI Demo] This is a mock AI response for: "${action}". Connect an Anthropic API key in backend/.env to enable real AI features.`;
-      for (const char of demo) {
-        res.write(`data: ${JSON.stringify({ text: char })}\n\n`);
-        await new Promise(r => setTimeout(r, 20));
-      }
-    } else {
-      const stream = await anthropic.messages.stream({
-        model: 'claude-opus-4-6',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      for await (const event of stream) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          res.write(`data: ${JSON.stringify({ text: event.delta.text })}\n\n`);
-        }
+    const stream = await groq.chat.completions.create({
+      model: 'llama3-70b-8192',
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+    });
+    for await (const chunk of stream) {
+      const text = chunk.choices[0]?.delta?.content || '';
+      if (text) {
+        res.write(`data: ${JSON.stringify({ text })}\n\n`);
       }
     }
   } catch (err) {

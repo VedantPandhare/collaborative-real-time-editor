@@ -420,68 +420,59 @@ export default function EditorPage() {
         }}
       />
 
-      {/* Toolbar */}
-      <Toolbar getQuill={getQuill} focusMode={focusMode} onToggleFocus={() => setFocusMode(f => !f)} />
-
       {/* Main area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Editor area */}
-        <div className={`flex-1 overflow-y-auto relative transition-all ${focusMode ? 'bg-notion-bg' : 'bg-notion-bg'}`}>
-          <div
-            className="max-w-3xl mx-auto relative"
-            style={{ minHeight: 'calc(100vh - 200px)' }}
-          >
-            {/* Quill editor mount point */}
-            <div className="relative">
-              <div
-                ref={editorContainerRef}
-                className={`transition-all duration-300 ${focusMode ? 'opacity-100' : 'opacity-100'}`}
-              />
-              {prediction && (
-                <div 
-                  className="ghost-text absolute pointer-events-none select-none"
-                  style={{
-                    top: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0).top,
-                    left: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0).left,
-                  }}
-                >
-                  {prediction}
-                  <span className="ml-2 text-[9px] bg-white/10 px-1.5 py-0.5 rounded uppercase tracking-tighter not-italic">Tab to accept</span>
-                </div>
-              )}
-            </div>
-
-            {/* Remote cursors overlay */}
-            {doc && (
-              <RemoteCursors
-                users={users.filter(u => u.cursor)}
-                getQuill={getQuill}
-                focusMode={focusMode}
-              />
-            )}
-          </div>
-        </div>
-
-        {/* Side panel */}
+      <div className="flex flex-1 overflow-hidden bg-bg-primary relative">
+        {/* Sidebar/Remote Panels */}
         {panel !== PANEL.NONE && (
-          <div className="w-80 flex-shrink-0 overflow-hidden animate-slide-up border-l border-notion-border">
+          <div className="w-80 flex-shrink-0 overflow-y-auto border-r border-white/[0.05] bg-bg-secondary/50">
             {panel === PANEL.CHAT && (
-              <ChatPanel
-                onClose={() => setPanel(PANEL.NONE)}
-                sendChat={sendChat}
-                messages={chatMessages}
-                users={users}
-              />
+              <ChatPanel onClose={() => setPanel(PANEL.NONE)} sendChat={sendChat} messages={chatMessages} users={users} />
             )}
             {panel === PANEL.HISTORY && (
-              <RevisionPanel
-                docId={doc?.id}
-                onClose={() => setPanel(PANEL.NONE)}
-                onRestored={() => {}}
-              />
+              <RevisionPanel docId={doc?.id} onClose={() => setPanel(PANEL.NONE)} onRestored={() => {}} />
             )}
           </div>
         )}
+
+        {/* Editor area */}
+        <div className={`flex-1 overflow-y-auto relative transition-all flex flex-col items-center ${focusMode ? '' : ''}`}>
+          {/* Toolbar at the top of the editor feed */}
+          <Toolbar getQuill={getQuill} focusMode={focusMode} onToggleFocus={() => setFocusMode(f => !f)} />
+
+          {/* Word-like Page Wrapper */}
+          <div className="py-12 px-4 w-full flex justify-center">
+            <div
+              className={`relative bg-bg-secondary border border-white/5 rounded-sm shadow-2xl shadow-black/50 transition-all duration-300 w-full max-w-[850px] min-h-[1100px] ${focusMode ? 'opacity-100 ring-1 ring-accent-color/30' : 'opacity-100'}`}
+            >
+              <div className="relative h-full w-full">
+                {/* Quill editor mount point */}
+                <div ref={editorContainerRef} className="h-full w-full word-page-editor" />
+                
+                {prediction && (
+                  <div 
+                    className="ghost-text absolute pointer-events-none select-none z-10"
+                    style={{
+                      top: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0)?.top,
+                      left: getQuill()?.getBounds(getQuill()?.getSelection()?.index || 0)?.left,
+                    }}
+                  >
+                    {prediction}
+                    <span className="ml-2 text-[9px] bg-white/10 px-1.5 py-0.5 rounded uppercase tracking-tighter not-italic">Tab to accept</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Remote cursors overlay */}
+              {doc && (
+                <RemoteCursors
+                  users={users.filter(u => u.cursor)}
+                  getQuill={getQuill}
+                  focusMode={focusMode}
+                />
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Slash command menu */}

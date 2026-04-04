@@ -30,18 +30,17 @@ body {
 /* Quill editor overrides for dark theme */
 .ql-container {
   font-size: 16px;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-main);
   border: none !important;
-  color: #e8e8e8;
+  color: var(--text-primary);
 }
 
 .ql-editor {
-  padding: 48px 72px;
-  min-height: calc(100vh - 200px);
+  padding: 80px 96px; /* A4 margins approx 1 inch */
   line-height: 1.7;
-  color: #e8e8e8;
+  color: var(--text-primary);
   background: transparent;
-  caret-color: #e8e8e8;
+  caret-color: var(--text-primary);
   outline: none;
 }
 
