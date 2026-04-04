@@ -1,0 +1,21 @@
+{
+  "name": "collab-editor-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.16.0",
+    "yjs": "^13.6.14",
+    "y-protocols": "^1.0.6",
+    "lib0": "^0.2.93",
+    "better-sqlite3": "^9.4.3",
+    "uuid": "^9.0.0",
+    "@anthropic-ai/sdk": "^0.20.9",
+    "dotenv": "^16.4.5"
+  }
+}
