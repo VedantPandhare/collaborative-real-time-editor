@@ -1,0 +1,28 @@
+flowchart LR
+    classDef client fill:#e0f2fe,stroke:#0284c7,color:#0f172a;
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#0f172a;
+    classDef service fill:#dcfce7,stroke:#16a34a,color:#0f172a;
+    classDef data fill:#ede9fe,stroke:#7c3aed,color:#0f172a;
+    classDef ext fill:#fee2e2,stroke:#dc2626,color:#0f172a;
+
+    User["User"]:::client
+    Frontend["Frontend App<br/>React + Vite + TipTap"]:::app
+    Backend["Backend API<br/>Node.js + Express"]:::service
+    Realtime["Realtime Layer<br/>WebSocket + Yjs"]:::service
+    Database["SQLite Database"]:::data
+    Supabase["Supabase Mirror"]:::ext
+    Groq["Groq AI"]:::ext
+
+    User --> Frontend
+    Frontend -->|"HTTP /api"| Backend
+    Frontend -->|"WebSocket /ws"| Realtime
+
+    Frontend -->|"Routes"| UI["Landing / Auth / Dashboard / Editor / Viewer"]:::app
+    Frontend -->|"Features"| Tools["Formatting / AI / Chat / Revisions / Export"]:::app
+
+    Backend --> Database
+    Realtime --> Database
+
+    Backend --> Supabase
+    Realtime --> Supabase
+    Backend --> Groq

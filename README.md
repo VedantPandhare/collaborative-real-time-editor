@@ -75,47 +75,9 @@ LiveDraft supports full document workflows, not just typing:
 - Supabase mirrors selected application data
 - Groq powers AI generation
 
-### Graphviz diagram
+### Architecture diagram
 
-```dot
-digraph LiveDraftArchitecture {
-  rankdir=LR;
-  graph [bgcolor="white", pad="0.3"];
-  node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#334155", fontname="Arial"];
-  edge [color="#475569", fontname="Arial"];
-
-  User [label="User"];
-  Browser [label="Browser\nReact + Vite"];
-  Landing [label="Landing Page"];
-  Auth [label="Auth Page"];
-  Dashboard [label="Dashboard"];
-  Editor [label="Collaborative Editor\nTipTap + UI"];
-  Viewer [label="Read-only Viewer"];
-
-  API [label="Express API"];
-  WS [label="WebSocket Server\n/ws"];
-  AI [label="Groq API"];
-  DB [label="SQLite\ncollab.db"];
-  SB [label="Supabase\nmirror layer"];
-
-  User -> Browser;
-  Browser -> Landing;
-  Browser -> Auth;
-  Browser -> Dashboard;
-  Browser -> Editor;
-  Browser -> Viewer;
-
-  Browser -> API [label="HTTP /api"];
-  Browser -> WS [label="WebSocket /ws"];
-
-  API -> DB [label="docs, auth, revisions"];
-  API -> SB [label="users, docs, chat mirror"];
-  API -> AI [label="AI commands"];
-
-  WS -> DB [label="document persistence"];
-  WS -> SB [label="presence/chat mirror"];
-}
-```
+![LiveDraft system architecture](./system.png)
 
 ## CRDT vs OT
 
