@@ -14,6 +14,7 @@ import SelectionBubbleMenu from '../components/SelectionBubbleMenu'
 import SlashMenu from '../components/SlashMenu'
 import ExportMenu from '../components/ExportMenuModern'
 import DocumentMap from '../components/DocumentMap'
+import InlineNotice from '../components/InlineNotice'
 
 const PAGE_HEIGHT = 1100
 
@@ -109,6 +110,8 @@ export default function EditorPage() {
   const [ghostText, setGhostText] = useState('')
   const [ghostPos, setGhostPos] = useState({ top: 0, left: 0, maxWidth: 320 })
   const [pageTheme, setPageTheme] = useState(() => window.localStorage.getItem('page-theme') || 'light')
+  const [notice, setNotice] = useState({ tone: 'info', message: '' })
+  const [saveState, setSaveState] = useState('saved')
 
   const titleTimerRef = useRef(null)
   const contentTimerRef = useRef(null)
@@ -116,8 +119,18 @@ export default function EditorPage() {
   const abortControllerRef = useRef(null)
   const isAutocompletingRef = useRef(false)
   const ghostCursorPosRef = useRef(null)
+  const noticeTimerRef = useRef(null)
   const onChatMessage = useCallback((msg) => setChatMessages((prev) => [...prev, msg]), [])
   const onChatHistory = useCallback((history) => setChatMessages(history), [])
+  const showNotice = useCallback((message, tone = 'error', timeout = 5000) => {
+    setNotice({ message, tone })
+    clearTimeout(noticeTimerRef.current)
+    if (timeout > 0) {
+      noticeTimerRef.current = setTimeout(() => {
+        setNotice((current) => (current.message === message ? { tone: 'info', message: '' } : current))
+      }, timeout)
+    }
+  }, [])
 
   const { connected, users, sendChat, updateLocalUser, getYdoc, getEditor, editor } = useCollabEditor({
     docId: doc?.id,
@@ -126,12 +139,28 @@ export default function EditorPage() {
     onContentChange: ({ html }) => {
       clearTimeout(contentTimerRef.current)
       if (!doc?.id) return
+      setSaveState('saving')
       contentTimerRef.current = setTimeout(() => {
-        updateDocContent(doc.id, html).catch(() => {})
+        updateDocContent(doc.id, html)
+          .then(() => setSaveState('saved'))
+          .catch((err) => {
+            setSaveState('error')
+            showNotice(err.message || 'We could not save your latest edits.', 'error')
+          })
       }, 700)
     },
     onChatMessage,
     onChatHistory,
+    onConnectionStatusChange: (isConnected) => {
+      if (isConnected) {
+        showNotice('Live collaboration reconnected.', 'success', 2500)
+        return
+      }
+      showNotice('Live collaboration disconnected. We will keep trying to reconnect.', 'error', 0)
+    },
+    onConnectionError: (message) => {
+      showNotice(message, 'error')
+    },
   })
 
   const refreshOutline = useCallback(() => {
@@ -195,9 +224,10 @@ export default function EditorPage() {
       if (force) {
         await nextEditor.storage.aiAutocomplete?.requestSuggestion?.()
       }
-    } catch (_) {
+    } catch (err) {
       if (!controller.signal.aborted) {
         setGhostText('')
+        showNotice(err.message || 'AI continuation is unavailable right now.', 'error')
       }
     } finally {
       if (abortControllerRef.current === controller) {
@@ -223,8 +253,8 @@ export default function EditorPage() {
         setTitle(data.title || 'untitled')
         setLoading(false)
       })
-      .catch(() => {
-        setError('Document not found')
+      .catch((err) => {
+        setError(err.message || 'Document not found')
         setLoading(false)
       })
   }, [token])
@@ -238,7 +268,9 @@ export default function EditorPage() {
         setLocalUser(displayName, current || '#5cbce0')
         updateLocalUser(displayName, current || '#5cbce0')
       })
-      .catch(() => {})
+      .catch(() => {
+        showNotice('Signed-in profile details could not be loaded. Collaboration will still work.', 'info')
+      })
   }, [updateLocalUser])
 
   useEffect(() => {
@@ -274,6 +306,7 @@ export default function EditorPage() {
     return () => {
       clearTimeout(contentTimerRef.current)
       clearTimeout(autocompleteTimerRef.current)
+      clearTimeout(noticeTimerRef.current)
       abortControllerRef.current?.abort()
     }
   }, [])
@@ -387,12 +420,12 @@ export default function EditorPage() {
         const insertAt = selection.to
         insertAiBlock(label, output, insertAt)
       }
-    } catch (_) {
-      window.alert('AI action failed. Please try again.')
+    } catch (err) {
+      showNotice(err.message || 'AI action failed. Please try again.', 'error')
     } finally {
       setIsAiLoading(false)
     }
-  }, [clearGhost, getEditor, insertAiBlock])
+  }, [clearGhost, getEditor, insertAiBlock, showNotice])
 
   const runAiCommand = useCallback(async ({
     instruction,
@@ -413,7 +446,7 @@ export default function EditorPage() {
       : ''
 
     if (requireSelection && !selectedText.trim()) {
-      window.alert('Please select text first.')
+      showNotice('Please select text first.', 'info')
       return
     }
 
@@ -443,12 +476,12 @@ export default function EditorPage() {
       } else {
         insertAiBlock(label, finalOutput, selection.to)
       }
-    } catch (_) {
-      window.alert('AI action failed. Please try again.')
+    } catch (err) {
+      showNotice(err.message || 'AI action failed. Please try again.', 'error')
     } finally {
       setIsAiLoading(false)
     }
-  }, [clearGhost, getEditor, insertAiBlock])
+  }, [clearGhost, getEditor, insertAiBlock, showNotice])
 
   const aiActionsRef = useRef(null)
   aiActionsRef.current = {
@@ -456,7 +489,7 @@ export default function EditorPage() {
       const nextEditor = getEditor()
       const selection = nextEditor?.state.selection
       if (!nextEditor || !selection || selection.from === selection.to) {
-        window.alert('Please select text to summarize.')
+        showNotice('Please select text to summarize.', 'info')
         return
       }
       return runAiTransform('summarize', { mode: 'append', label: 'AI Summary:' })
@@ -465,7 +498,7 @@ export default function EditorPage() {
       const nextEditor = getEditor()
       const selection = nextEditor?.state.selection
       if (!nextEditor || !selection || selection.from === selection.to) {
-        window.alert('Please select text to refine.')
+        showNotice('Please select text to refine.', 'info')
         return
       }
       return runAiTransform('improve', { mode: 'replace', label: 'AI Refinement:' })
@@ -474,7 +507,7 @@ export default function EditorPage() {
       const nextEditor = getEditor()
       const selection = nextEditor?.state.selection
       if (!nextEditor || !selection || selection.from === selection.to) {
-        window.alert('Please select text to rephrase.')
+        showNotice('Please select text to rephrase.', 'info')
         return
       }
       return runAiTransform('professional', { mode: 'replace', label: 'AI Professional Rephrase:' })
@@ -530,10 +563,16 @@ export default function EditorPage() {
     }
 
     clearTimeout(titleTimerRef.current)
+    setSaveState('saving')
     titleTimerRef.current = setTimeout(() => {
-      updateDocTitle(doc?.id, nextTitle).catch(() => {})
+      updateDocTitle(doc?.id, nextTitle)
+        .then(() => setSaveState('saved'))
+        .catch((err) => {
+          setSaveState('error')
+          showNotice(err.message || 'The document title could not be saved.', 'error')
+        })
     }, 600)
-  }, [doc?.id, getYdoc])
+  }, [doc?.id, getYdoc, showNotice])
 
   const handleSlashSelect = useCallback((command) => {
     const nextEditor = getEditor()
@@ -680,7 +719,7 @@ export default function EditorPage() {
         <div className="flex flex-wrap items-center justify-end gap-2">
           <div className="hidden items-center gap-2 rounded-full border border-accent-color/20 px-3 py-2 text-xs font-semibold text-green-400 bg-green-500/10 md:flex">
             <Check size={14} />
-            <span>Saved</span>
+            <span>{saveState === 'saving' ? 'Saving...' : saveState === 'error' ? 'Save failed' : 'Saved'}</span>
           </div>
 
           <ExportMenu editor={editor} title={title} />
@@ -744,6 +783,10 @@ export default function EditorPage() {
         }}
       />
 
+      <div className="relative z-30 px-4 pt-3 sm:px-6">
+        <InlineNotice message={notice.message} tone={notice.tone} />
+      </div>
+
       <div className="relative z-30 border-b border-white/[0.05] bg-bg-secondary/80 backdrop-blur-xl">
         <Toolbar
           editor={editor}
@@ -797,7 +840,13 @@ export default function EditorPage() {
 
           {showChat && (
             <div className="w-80 flex-shrink-0 overflow-y-auto border-l border-white/[0.05] bg-bg-secondary/50">
-              <ChatPanel onClose={() => setShowChat(false)} sendChat={sendChat} messages={chatMessages} users={users} />
+              <ChatPanel
+                onClose={() => setShowChat(false)}
+                sendChat={sendChat}
+                messages={chatMessages}
+                users={users}
+                onError={(message) => showNotice(message, 'error')}
+              />
             </div>
           )}
         </div>

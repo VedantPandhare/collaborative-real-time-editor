@@ -69,7 +69,16 @@ function normalizeUsers(rawUsers) {
   return [...map.values()]
 }
 
-export function useCollabEditor({ docId, readonly = false, initialContent = '', onContentChange, onChatMessage, onChatHistory }) {
+export function useCollabEditor({
+  docId,
+  readonly = false,
+  initialContent = '',
+  onContentChange,
+  onChatMessage,
+  onChatHistory,
+  onConnectionStatusChange,
+  onConnectionError,
+}) {
   const [connected, setConnected] = useState(false)
   const [users, setUsers] = useState([])
   const ydocRef = useRef(new Y.Doc())
@@ -192,14 +201,18 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
       if (msgType === MESSAGE_CHAT) {
         try {
           onChatMessage?.(JSON.parse(decoding.readVarString(decoder)))
-        } catch (_) {}
+        } catch {
+          onConnectionError?.('A chat update could not be processed.')
+        }
         return
       }
 
       if (msgType === MESSAGE_CHAT_HISTORY) {
         try {
           onChatHistory?.(JSON.parse(decoding.readVarString(decoder)))
-        } catch (_) {}
+        } catch {
+          onConnectionError?.('Chat history could not be loaded completely.')
+        }
         return
       }
 
@@ -207,7 +220,9 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
         try {
           const snapshot = JSON.parse(decoding.readVarString(decoder))
           setUsers(normalizeUsers(Array.isArray(snapshot) ? snapshot : []))
-        } catch (_) {}
+        } catch {
+          onConnectionError?.('Presence data was received in an unexpected format.')
+        }
         return
       }
 
@@ -220,13 +235,16 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
             lastHtmlRef.current = payload.html
             setTimeout(() => { applyingRemoteRef.current = false }, 0)
           }
-        } catch (_) {}
+        } catch {
+          onConnectionError?.('A live content update could not be applied.')
+        }
       }
     }
 
     ws.onclose = () => {
       if (!mountedRef.current) return
       setConnected(false)
+      onConnectionStatusChange?.(false)
       reconnectTimerRef.current = setTimeout(() => {
         if (mountedRef.current) connect()
       }, 3000)
@@ -235,6 +253,7 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
     ws.onopen = () => {
       if (!mountedRef.current) return
       setConnected(true)
+      onConnectionStatusChange?.(true)
       const { name, color } = getLocalUser()
       awareness.setLocalState({ name, color, cursor: null })
       setUsers(normalizeUsers([{ clientId: 'local', name, color, cursor: null }]))
@@ -242,6 +261,10 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
       encoding.writeVarUint(enc, MESSAGE_SYNC)
       syncProtocol.writeSyncStep1(enc, ydoc)
       ws.send(encoding.toUint8Array(enc))
+    }
+
+    ws.onerror = () => {
+      onConnectionError?.('The collaboration connection ran into a network problem.')
     }
 
     const updateHandler = (update, origin) => {
@@ -283,13 +306,17 @@ export function useCollabEditor({ docId, readonly = false, initialContent = '', 
 
   const sendChat = useCallback((message) => {
     const ws = wsRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      onConnectionError?.('Chat is unavailable until the collaboration connection reconnects.')
+      return false
+    }
     const { name, color } = getLocalUser()
     const enc = encoding.createEncoder()
     encoding.writeVarUint(enc, MESSAGE_CHAT)
     encoding.writeVarString(enc, JSON.stringify({ userName: name, userColor: color, message }))
     ws.send(encoding.toUint8Array(enc))
-  }, [])
+    return true
+  }, [onConnectionError])
 
   const updateLocalUser = useCallback((name, color) => {
     awarenessRef.current.setLocalState({

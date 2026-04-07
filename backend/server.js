@@ -15,6 +15,11 @@ import jwt from 'jsonwebtoken';
 import db from './db.js';
 import { mirrorChatMessageToSupabase, mirrorDocumentToSupabase, mirrorUserToSupabase } from './supabase.js';
 
+const MAX_TITLE_LENGTH = 160;
+const MAX_CONTENT_LENGTH = 500000;
+const MAX_CHAT_MESSAGE_LENGTH = 2000;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function encodeDocStateFromContent(content = '', title = 'untitled') {
   const ydoc = new Y.Doc();
   ydoc.getText('quill').insert(0, content);
@@ -65,6 +70,39 @@ function buildAiCommandPrompt(instruction, selectionText, documentText) {
     '',
     'RESPONSE:',
   ].join('\n');
+}
+
+function sanitizeTitle(value, fallback = 'Untitled') {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return fallback;
+  return normalized.slice(0, MAX_TITLE_LENGTH);
+}
+
+function sanitizeContent(value) {
+  return String(value ?? '').slice(0, MAX_CONTENT_LENGTH);
+}
+
+function isValidUuidLike(value) {
+  return typeof value === 'string' && /^[0-9a-f-]{8,}$/i.test(value);
+}
+
+function safeJsonParse(value) {
+  try {
+    return { ok: true, data: JSON.parse(value) };
+  } catch {
+    return { ok: false, data: null };
+  }
+}
+
+function reportServerError(res, error, fallbackMessage) {
+  console.error(error);
+  res.status(500).json({ error: fallbackMessage });
+}
+
+function mirrorSafely(label, operation) {
+  return Promise.resolve(operation()).catch((error) => {
+    console.warn(`${label} failed:`, error?.message || error);
+  });
 }
 
 function createToken(user) {
@@ -251,7 +289,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const docId = url.searchParams.get('docId');
-  if (!docId) { ws.close(); return; }
+  if (!docId || !isValidUuidLike(docId)) { ws.close(1008, 'Invalid document reference'); return; }
 
   const doc = db.prepare('SELECT id FROM documents WHERE id=? OR edit_token=?').get(docId, docId);
   if (!doc) { ws.close(1008, 'Not found'); return; }
@@ -302,87 +340,113 @@ wss.on('connection', (ws, req) => {
 
   // Message handler
   ws.on('message', (data) => {
-    const uint8 = new Uint8Array(data);
-    const decoder = decoding.createDecoder(uint8);
-    const msgType = decoding.readVarUint(decoder);
+    try {
+      const uint8 = new Uint8Array(data);
+      const decoder = decoding.createDecoder(uint8);
+      const msgType = decoding.readVarUint(decoder);
 
-    if (msgType === MESSAGE_SYNC) {
-      const encoder = encoding.createEncoder();
-      encoding.writeVarUint(encoder, MESSAGE_SYNC);
-      // Passing `ws` as the transaction origin applies the update and triggers ydoc.on('update') with origin === ws
-      const syncMsgType = syncProtocol.readSyncMessage(decoder, encoder, ydoc, ws);
-      
-      if (syncMsgType === syncProtocol.messageYjsSyncStep1) {
-        // SyncStep1: Send back SyncStep2 (the missing updates)
-        if (encoding.length(encoder) > 1) {
-          ws.send(encoding.toUint8Array(encoder));
+      if (msgType === MESSAGE_SYNC) {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, MESSAGE_SYNC);
+        // Passing `ws` as the transaction origin applies the update and triggers ydoc.on('update') with origin === ws
+        const syncMsgType = syncProtocol.readSyncMessage(decoder, encoder, ydoc, ws);
+
+        if (syncMsgType === syncProtocol.messageYjsSyncStep1) {
+          if (encoding.length(encoder) > 1) {
+            ws.send(encoding.toUint8Array(encoder));
+          }
         }
+        return;
       }
-      // Note: syncProtocol.messageYjsSyncStep2 and messageYjsSyncUpdate are automatically 
-      // broadcasted via the ydoc.on('update') listener in getOrCreateDoc.
-    } else if (msgType === MESSAGE_AWARENESS) {
-      const update = decoding.readVarUint8Array(decoder);
-      const awarenessDecoder = decoding.createDecoder(update);
-      const updateLen = decoding.readVarUint(awarenessDecoder);
-      for (let i = 0; i < updateLen; i += 1) {
-        const clientId = decoding.readVarUint(awarenessDecoder);
-        ws._awarenessClientIds.add(clientId);
-        decoding.readVarUint(awarenessDecoder);
-        decoding.readVarString(awarenessDecoder);
-      }
-      awarenessProtocol.applyAwarenessUpdate(awareness, update, ws);
-      // Broadcast awareness to everyone else
-      const enc = encoding.createEncoder();
-      encoding.writeVarUint(enc, MESSAGE_AWARENESS);
-      encoding.writeVarUint8Array(enc, update);
-      const msg = encoding.toUint8Array(enc);
-      connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
-      broadcastPresence(connections, awareness);
-    } else if (msgType === MESSAGE_CHAT) {
-      const payload = JSON.parse(decoding.readVarString(decoder));
-      // Persist
-      db.prepare('INSERT INTO chat_messages (doc_id, user_name, user_color, message) VALUES (?,?,?,?)')
-        .run(doc.id, payload.userName, payload.userColor, payload.message);
-      mirrorChatMessageToSupabase({
-        doc_id: doc.id,
-        user_name: payload.userName,
-        user_color: payload.userColor,
-        message: payload.message,
-      }).catch(() => {});
-      // Broadcast to all (including sender)
-      const enc = encoding.createEncoder();
-      encoding.writeVarUint(enc, MESSAGE_CHAT);
-      encoding.writeVarString(enc, JSON.stringify({ ...payload, created_at: Math.floor(Date.now() / 1000) }));
-      const msg = encoding.toUint8Array(enc);
-      connections.forEach(conn => { if (conn.readyState === WebSocket.OPEN) conn.send(msg); });
-    } else if (msgType === MESSAGE_CONTENT) {
-      const payload = JSON.parse(decoding.readVarString(decoder));
-      const title = payload.title || docs.get(doc.id)?.currentTitle || db.prepare('SELECT title FROM documents WHERE id=?').get(doc.id)?.title || 'Untitled';
-      const docEntry = docs.get(doc.id);
-      if (docEntry) {
-        docEntry.currentContent = payload.html || '';
-        docEntry.currentTitle = title;
-        docEntry.markPersistDirty();
-        docEntry.markRevisionDirty();
-      }
-      db.prepare('UPDATE documents SET content=?, title=?, updated_at=unixepoch() WHERE id=?')
-        .run(payload.html || '', title, doc.id);
-      const currentDoc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(doc.id);
-      mirrorDocumentToSupabase({
-        ...currentDoc,
-        title,
-        content: payload.html || '',
-      }).catch(() => {});
 
-      const enc = encoding.createEncoder();
-      encoding.writeVarUint(enc, MESSAGE_CONTENT);
-      encoding.writeVarString(enc, JSON.stringify({
-        html: payload.html || '',
-        updated_at: Math.floor(Date.now() / 1000),
-      }));
-      const msg = encoding.toUint8Array(enc);
-      connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
+      if (msgType === MESSAGE_AWARENESS) {
+        const update = decoding.readVarUint8Array(decoder);
+        const awarenessDecoder = decoding.createDecoder(update);
+        const updateLen = decoding.readVarUint(awarenessDecoder);
+        for (let i = 0; i < updateLen; i += 1) {
+          const clientId = decoding.readVarUint(awarenessDecoder);
+          ws._awarenessClientIds.add(clientId);
+          decoding.readVarUint(awarenessDecoder);
+          decoding.readVarString(awarenessDecoder);
+        }
+        awarenessProtocol.applyAwarenessUpdate(awareness, update, ws);
+        const enc = encoding.createEncoder();
+        encoding.writeVarUint(enc, MESSAGE_AWARENESS);
+        encoding.writeVarUint8Array(enc, update);
+        const msg = encoding.toUint8Array(enc);
+        connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
+        broadcastPresence(connections, awareness);
+        return;
+      }
+
+      if (msgType === MESSAGE_CHAT) {
+        const parsed = safeJsonParse(decoding.readVarString(decoder));
+        const message = String(parsed.data?.message || '').trim();
+        const userName = sanitizeTitle(parsed.data?.userName, 'Guest').slice(0, 60);
+        const userColor = /^#[0-9a-f]{3,8}$/i.test(String(parsed.data?.userColor || '')) ? parsed.data.userColor : '#5cbce0';
+        if (!parsed.ok || !message) return;
+        const nextMessage = message.slice(0, MAX_CHAT_MESSAGE_LENGTH);
+        db.prepare('INSERT INTO chat_messages (doc_id, user_name, user_color, message) VALUES (?,?,?,?)')
+          .run(doc.id, userName, userColor, nextMessage);
+        mirrorSafely('Chat mirror', () => mirrorChatMessageToSupabase({
+          doc_id: doc.id,
+          user_name: userName,
+          user_color: userColor,
+          message: nextMessage,
+        }));
+        const enc = encoding.createEncoder();
+        encoding.writeVarUint(enc, MESSAGE_CHAT);
+        encoding.writeVarString(enc, JSON.stringify({
+          userName,
+          userColor,
+          message: nextMessage,
+          created_at: Math.floor(Date.now() / 1000),
+        }));
+        const msg = encoding.toUint8Array(enc);
+        connections.forEach(conn => { if (conn.readyState === WebSocket.OPEN) conn.send(msg); });
+        return;
+      }
+
+      if (msgType === MESSAGE_CONTENT) {
+        const parsed = safeJsonParse(decoding.readVarString(decoder));
+        if (!parsed.ok) return;
+        const html = sanitizeContent(parsed.data?.html);
+        const title = sanitizeTitle(
+          parsed.data?.title || docs.get(doc.id)?.currentTitle || db.prepare('SELECT title FROM documents WHERE id=?').get(doc.id)?.title,
+          'Untitled',
+        );
+        const docEntry = docs.get(doc.id);
+        if (docEntry) {
+          docEntry.currentContent = html;
+          docEntry.currentTitle = title;
+          docEntry.markPersistDirty();
+          docEntry.markRevisionDirty();
+        }
+        db.prepare('UPDATE documents SET content=?, title=?, updated_at=unixepoch() WHERE id=?')
+          .run(html, title, doc.id);
+        const currentDoc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(doc.id);
+        mirrorSafely('Document mirror', () => mirrorDocumentToSupabase({
+          ...currentDoc,
+          title,
+          content: html,
+        }));
+
+        const enc = encoding.createEncoder();
+        encoding.writeVarUint(enc, MESSAGE_CONTENT);
+        encoding.writeVarString(enc, JSON.stringify({
+          html,
+          updated_at: Math.floor(Date.now() / 1000),
+        }));
+        const msg = encoding.toUint8Array(enc);
+        connections.forEach(conn => { if (conn !== ws && conn.readyState === WebSocket.OPEN) conn.send(msg); });
+      }
+    } catch (error) {
+      console.warn('WebSocket message handling failed:', error?.message || error);
     }
+  });
+
+  ws.on('error', (error) => {
+    console.warn('WebSocket connection error:', error?.message || error);
   });
 
   ws.on('close', () => {
@@ -407,180 +471,248 @@ wss.on('connection', (ws, req) => {
 // ─── REST API ─────────────────────────────────────────────────────────────────
 
 app.post('/api/auth/signup', async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  const password = String(req.body?.password || '');
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const existing = db.prepare('SELECT id FROM users WHERE email=?').get(email);
+    if (existing) return res.status(409).json({ error: 'Account already exists' });
+
+    const id = uuidv4();
+    const passwordHash = await bcrypt.hash(password, 10);
+    db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?,?,?)')
+      .run(id, email, passwordHash);
+
+    const user = { id, email };
+    await mirrorSafely('User mirror', () => mirrorUserToSupabase(user));
+    res.json({ token: createToken(user), user });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to create account right now');
   }
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  }
-
-  const existing = db.prepare('SELECT id FROM users WHERE email=?').get(email);
-  if (existing) return res.status(409).json({ error: 'Account already exists' });
-
-  const id = uuidv4();
-  const passwordHash = await bcrypt.hash(password, 10);
-  db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?,?,?)')
-    .run(id, email, passwordHash);
-
-  const user = { id, email };
-  await mirrorUserToSupabase(user).catch(() => {});
-  res.json({ token: createToken(user), user });
 });
 
 app.post('/api/auth/signin', async (req, res) => {
-  const email = String(req.body?.email || '').trim().toLowerCase();
-  const password = String(req.body?.password || '');
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    const user = db.prepare('SELECT id, email, password_hash FROM users WHERE email=?').get(email);
+    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+
+    const matches = await bcrypt.compare(password, user.password_hash);
+    if (!matches) return res.status(401).json({ error: 'Invalid email or password' });
+
+    res.json({
+      token: createToken(user),
+      user: { id: user.id, email: user.email },
+    });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to sign in right now');
   }
-
-  const user = db.prepare('SELECT id, email, password_hash FROM users WHERE email=?').get(email);
-  if (!user) return res.status(401).json({ error: 'Invalid email or password' });
-
-  const matches = await bcrypt.compare(password, user.password_hash);
-  if (!matches) return res.status(401).json({ error: 'Invalid email or password' });
-
-  res.json({
-    token: createToken(user),
-    user: { id: user.id, email: user.email },
-  });
 });
 
 app.get('/api/auth/me', authRequired, (req, res) => {
-  const user = db.prepare('SELECT id, email, created_at FROM users WHERE id=?').get(req.user.sub);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ user });
+  try {
+    const user = db.prepare('SELECT id, email, created_at FROM users WHERE id=?').get(req.user.sub);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to load your session');
+  }
 });
 
 // List documents
 app.get('/api/docs', authRequired, (req, res) => {
-  const rows = db.prepare(`
-    SELECT id, title, edit_token, view_token, created_at, updated_at
-    FROM documents
-    WHERE owner_id = ?
-    ORDER BY updated_at DESC
-  `).all(req.user.sub);
-  res.json(rows);
+  try {
+    const rows = db.prepare(`
+      SELECT id, title, edit_token, view_token, created_at, updated_at
+      FROM documents
+      WHERE owner_id = ?
+      ORDER BY updated_at DESC
+    `).all(req.user.sub);
+    res.json(rows);
+  } catch (error) {
+    reportServerError(res, error, 'Unable to load documents');
+  }
 });
 
 // Create document
 app.post('/api/docs', authRequired, async (req, res) => {
-  const id = uuidv4();
-  const editToken = uuidv4();
-  const viewToken = uuidv4();
-  const title = req.body?.title || 'untitled';
-  db.prepare('INSERT INTO documents (id, owner_id, edit_token, view_token, title) VALUES (?,?,?,?,?)')
-    .run(id, req.user.sub, editToken, viewToken, title);
-  const doc = { id, owner_id: req.user.sub, edit_token: editToken, view_token: viewToken, title };
-  await mirrorDocumentToSupabase(doc).catch(() => {});
-  res.json({ id, edit_token: editToken, view_token: viewToken, title });
+  try {
+    const id = uuidv4();
+    const editToken = uuidv4();
+    const viewToken = uuidv4();
+    const title = sanitizeTitle(req.body?.title, 'Untitled');
+    db.prepare('INSERT INTO documents (id, owner_id, edit_token, view_token, title) VALUES (?,?,?,?,?)')
+      .run(id, req.user.sub, editToken, viewToken, title);
+    const doc = { id, owner_id: req.user.sub, edit_token: editToken, view_token: viewToken, title };
+    await mirrorSafely('Document mirror', () => mirrorDocumentToSupabase(doc));
+    res.json({ id, edit_token: editToken, view_token: viewToken, title });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to create the document');
+  }
 });
 
 // Get document by id or token
 app.get('/api/docs/:token', (req, res) => {
-  const { token } = req.params;
-  const row = db.prepare('SELECT id, title, edit_token, view_token, content, created_at, updated_at FROM documents WHERE id=? OR edit_token=? OR view_token=?')
-    .get(token, token, token);
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  const isView = row.view_token === token;
-  res.json({ ...row, readonly: isView });
+  try {
+    const { token } = req.params;
+    if (!isValidUuidLike(token)) {
+      return res.status(400).json({ error: 'Invalid document reference' });
+    }
+    const row = db.prepare('SELECT id, title, edit_token, view_token, content, created_at, updated_at FROM documents WHERE id=? OR edit_token=? OR view_token=?')
+      .get(token, token, token);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const isView = row.view_token === token;
+    res.json({ ...row, readonly: isView });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to load the document');
+  }
 });
 
 // Update document title
 app.patch('/api/docs/:id', authRequired, async (req, res) => {
-  const { id } = req.params;
-  const { title, content } = req.body;
-  const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(id);
-  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
-  const current = db.prepare('SELECT title, content FROM documents WHERE id=?').get(id);
-  const nextTitle = typeof title === 'string' ? title : current?.title;
-  const nextContent = typeof content === 'string' ? content : current?.content;
-  db.prepare('UPDATE documents SET title=?, content=?, updated_at=unixepoch() WHERE id=?').run(nextTitle, nextContent, id);
-  const liveDoc = docs.get(id);
-  if (liveDoc) {
-    liveDoc.currentTitle = nextTitle || 'Untitled';
-    liveDoc.currentContent = nextContent || '';
-    liveDoc.markPersistDirty();
-    if (typeof content === 'string') {
-      liveDoc.markRevisionDirty();
+  try {
+    const { id } = req.params;
+    const { title, content } = req.body || {};
+    if (!isValidUuidLike(id)) {
+      return res.status(400).json({ error: 'Invalid document id' });
     }
+    if (typeof title !== 'string' && typeof content !== 'string') {
+      return res.status(400).json({ error: 'Provide a title or content value to update' });
+    }
+    const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(id);
+    if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
+    const current = db.prepare('SELECT title, content FROM documents WHERE id=?').get(id);
+    const nextTitle = typeof title === 'string' ? sanitizeTitle(title, current?.title || 'Untitled') : current?.title;
+    const nextContent = typeof content === 'string' ? sanitizeContent(content) : current?.content;
+    db.prepare('UPDATE documents SET title=?, content=?, updated_at=unixepoch() WHERE id=?').run(nextTitle, nextContent, id);
+    const liveDoc = docs.get(id);
+    if (liveDoc) {
+      liveDoc.currentTitle = nextTitle || 'Untitled';
+      liveDoc.currentContent = nextContent || '';
+      liveDoc.markPersistDirty();
+      if (typeof content === 'string') {
+        liveDoc.markRevisionDirty();
+      }
+    }
+    await mirrorSafely('Document mirror', () => mirrorDocumentToSupabase({ ...doc, title: nextTitle, content: nextContent }));
+    res.json({ ok: true });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to update the document');
   }
-  await mirrorDocumentToSupabase({ ...doc, title: nextTitle, content: nextContent }).catch(() => {});
-  res.json({ ok: true });
 });
 
 // Delete document
 app.delete('/api/docs/:id', authRequired, (req, res) => {
-  const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
-  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
-  db.prepare('DELETE FROM documents WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
+  try {
+    if (!isValidUuidLike(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid document id' });
+    }
+    const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
+    if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
+    db.prepare('DELETE FROM documents WHERE id=?').run(req.params.id);
+    res.json({ ok: true });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to delete the document');
+  }
 });
 
 // Get revisions
 app.get('/api/docs/:id/revisions', authRequired, (req, res) => {
-  const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
-  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
-  const rows = db.prepare('SELECT id, title, content, created_at FROM revisions WHERE doc_id=? ORDER BY created_at DESC')
-    .all(req.params.id);
-  res.json(rows);
+  try {
+    if (!isValidUuidLike(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid document id' });
+    }
+    const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
+    if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
+    const rows = db.prepare('SELECT id, title, content, created_at FROM revisions WHERE doc_id=? ORDER BY created_at DESC')
+      .all(req.params.id);
+    res.json(rows);
+  } catch (error) {
+    reportServerError(res, error, 'Unable to load revisions');
+  }
 });
 
 app.get('/api/docs/:id/revisions/:revId', authRequired, (req, res) => {
-  const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
-  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
-  const revision = db.prepare('SELECT id, title, content, created_at FROM revisions WHERE id=? AND doc_id=?')
-    .get(req.params.revId, req.params.id);
-  if (!revision) return res.status(404).json({ error: 'Not found' });
-  res.json({ revision });
+  try {
+    if (!isValidUuidLike(req.params.id) || !/^\d+$/.test(String(req.params.revId))) {
+      return res.status(400).json({ error: 'Invalid revision reference' });
+    }
+    const doc = db.prepare('SELECT id, owner_id FROM documents WHERE id=?').get(req.params.id);
+    if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
+    const revision = db.prepare('SELECT id, title, content, created_at FROM revisions WHERE id=? AND doc_id=?')
+      .get(req.params.revId, req.params.id);
+    if (!revision) return res.status(404).json({ error: 'Not found' });
+    res.json({ revision });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to load that revision');
+  }
 });
 
 // Restore revision
 app.post('/api/docs/:id/revisions/:revId/restore', authRequired, async (req, res) => {
-  const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(req.params.id);
-  if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
-  const rev = db.prepare('SELECT * FROM revisions WHERE id=? AND doc_id=?').get(req.params.revId, req.params.id);
-  if (!rev) return res.status(404).json({ error: 'Not found' });
+  try {
+    if (!isValidUuidLike(req.params.id) || !/^\d+$/.test(String(req.params.revId))) {
+      return res.status(400).json({ error: 'Invalid revision reference' });
+    }
+    const doc = db.prepare('SELECT id, owner_id, edit_token, view_token FROM documents WHERE id=?').get(req.params.id);
+    if (!doc || doc.owner_id !== req.user.sub) return res.status(404).json({ error: 'Not found' });
+    const rev = db.prepare('SELECT * FROM revisions WHERE id=? AND doc_id=?').get(req.params.revId, req.params.id);
+    if (!rev) return res.status(404).json({ error: 'Not found' });
 
-  const restoredState = encodeDocStateFromContent(rev.content, rev.title);
-  const docEntry = docs.get(req.params.id);
+    const restoredState = encodeDocStateFromContent(rev.content, rev.title);
+    const docEntry = docs.get(req.params.id);
 
-  if (docEntry) {
-    docEntry.currentTitle = rev.title || 'untitled';
-    docEntry.currentContent = rev.content || '';
-    docEntry.markPersistDirty();
-    docEntry.ydoc.transact(() => {
-      const ytext = docEntry.ydoc.getText('quill');
-      const ytitle = docEntry.ydoc.getText('title');
-      ytext.delete(0, ytext.length);
-      ytitle.delete(0, ytitle.length);
-      ytext.insert(0, rev.content || '');
-      ytitle.insert(0, rev.title || 'untitled');
-    }, 'restore');
+    if (docEntry) {
+      docEntry.currentTitle = rev.title || 'untitled';
+      docEntry.currentContent = rev.content || '';
+      docEntry.markPersistDirty();
+      docEntry.ydoc.transact(() => {
+        const ytext = docEntry.ydoc.getText('quill');
+        const ytitle = docEntry.ydoc.getText('title');
+        ytext.delete(0, ytext.length);
+        ytitle.delete(0, ytitle.length);
+        ytext.insert(0, rev.content || '');
+        ytitle.insert(0, rev.title || 'untitled');
+      }, 'restore');
 
-    const enc = encoding.createEncoder();
-    encoding.writeVarUint(enc, MESSAGE_CONTENT);
-    encoding.writeVarString(enc, JSON.stringify({
-      html: rev.content || '',
-      updated_at: Math.floor(Date.now() / 1000),
-      restored_from_revision_id: req.params.revId,
-    }));
-    const message = encoding.toUint8Array(enc);
-    docEntry.connections.forEach((conn) => {
-      if (conn.readyState === WebSocket.OPEN) {
-        conn.send(message);
-      }
-    });
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MESSAGE_CONTENT);
+      encoding.writeVarString(enc, JSON.stringify({
+        html: rev.content || '',
+        updated_at: Math.floor(Date.now() / 1000),
+        restored_from_revision_id: req.params.revId,
+      }));
+      const message = encoding.toUint8Array(enc);
+      docEntry.connections.forEach((conn) => {
+        if (conn.readyState === WebSocket.OPEN) {
+          conn.send(message);
+        }
+      });
+    }
+    db.prepare('UPDATE documents SET ydoc_state=?, content=?, title=?, updated_at=unixepoch() WHERE id=?')
+      .run(restoredState, rev.content, rev.title, req.params.id);
+    db.prepare('INSERT INTO revisions (doc_id, snapshot, content, title) VALUES (?,?,?,?)')
+      .run(req.params.id, restoredState, rev.content || '', rev.title || 'untitled');
+    docEntry?.setLastRevisionSignature(`${rev.title || 'untitled'}::${rev.content || ''}`);
+    await mirrorSafely('Document mirror', () => mirrorDocumentToSupabase({ ...doc, title: rev.title, content: rev.content }));
+    res.json({ ok: true });
+  } catch (error) {
+    reportServerError(res, error, 'Unable to restore that revision');
   }
-  db.prepare('UPDATE documents SET ydoc_state=?, content=?, title=?, updated_at=unixepoch() WHERE id=?')
-    .run(restoredState, rev.content, rev.title, req.params.id);
-  db.prepare('INSERT INTO revisions (doc_id, snapshot, content, title) VALUES (?,?,?,?)')
-    .run(req.params.id, restoredState, rev.content || '', rev.title || 'untitled');
-  docEntry?.setLastRevisionSignature(`${rev.title || 'untitled'}::${rev.content || ''}`);
-  await mirrorDocumentToSupabase({ ...doc, title: rev.title, content: rev.content }).catch(() => {});
-  res.json({ ok: true });
 });
 
 // AI: Analyze / summarize text (SSE stream)
@@ -613,10 +745,9 @@ app.post('/api/ai/command', async (req, res) => {
 });
 
 app.post('/api/ai/analyze', async (req, res) => {
-  if (!process.env.GROQ_API_KEY) {
-    return res.status(503).json({ error: 'GROQ_API_KEY is missing in backend/.env' });
-  }
-  const { text, action } = req.body;
+  if (!ensureGroqConfigured(res)) return;
+  const text = String(req.body?.text || '').trim();
+  const action = String(req.body?.action || '').trim();
   if (!text || !action) return res.status(400).json({ error: 'text and action required' });
 
   const prompts = {
@@ -631,7 +762,7 @@ app.post('/api/ai/analyze', async (req, res) => {
     continue: `You are an AI writing assistant. Continue the following text naturally with 1-2 sentences that fit the style and topic. Return ONLY the continuation text, no preamble, no quotation marks:\n\n${text}`,
   };
 
-  const prompt = prompts[action] || `${action}:\n\n${text}`;
+  const prompt = prompts[action] || `${action.slice(0, 120)}:\n\n${text.slice(0, 20000)}`;
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -658,8 +789,8 @@ app.post('/api/ai/analyze', async (req, res) => {
 
 app.post('/api/ai/autocomplete', async (req, res) => {
   if (!ensureGroqConfigured(res)) return;
-  const { documentText } = req.body;
-  if (!documentText || !String(documentText).trim()) {
+  const documentText = String(req.body?.documentText || '').trim();
+  if (!documentText) {
     return res.status(400).json({ error: 'documentText is required' });
   }
 
@@ -699,6 +830,12 @@ app.post('/api/ai/autocomplete', async (req, res) => {
 
 // Health check
 app.get('/api/health', (_, res) => res.json({ ok: true, docs: docs.size }));
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Unexpected server error' });
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;

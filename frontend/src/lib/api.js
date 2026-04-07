@@ -2,6 +2,14 @@ const BASE = '/api'
 const TOKEN_KEY = 'livedraft-token'
 const USER_KEY = 'livedraft-user'
 
+export class ApiError extends Error {
+  constructor(message, status = 0) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 function notifyDocsChanged() {
   window.dispatchEvent(new CustomEvent('docs-updated'))
 }
@@ -44,39 +52,47 @@ function authHeaders(extra = {}) {
 
 async function parseJson(r) {
   const data = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(data.error || 'Request failed')
+  if (!r.ok) throw new ApiError(data.error || 'Request failed', r.status)
   return data
 }
 
+async function requestJson(url, options = {}) {
+  try {
+    const response = await fetch(url, options)
+    return await parseJson(response)
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error
+    if (error instanceof ApiError) throw error
+    throw new ApiError('Unable to reach the server. Check your connection and try again.')
+  }
+}
+
 export async function signUp(email, password) {
-  const r = await fetch(`${BASE}/auth/signup`, {
+  const data = await requestJson(`${BASE}/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   })
-  const data = await parseJson(r)
   setAuthToken(data.token)
   setStoredUser(data.user)
   return data
 }
 
 export async function signIn(email, password) {
-  const r = await fetch(`${BASE}/auth/signin`, {
+  const data = await requestJson(`${BASE}/auth/signin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   })
-  const data = await parseJson(r)
   setAuthToken(data.token)
   setStoredUser(data.user)
   return data
 }
 
 export async function getSessionUser() {
-  const r = await fetch(`${BASE}/auth/me`, {
+  const data = await requestJson(`${BASE}/auth/me`, {
     headers: authHeaders(),
   })
-  const data = await parseJson(r)
   setStoredUser(data.user)
   return data
 }
@@ -87,77 +103,66 @@ export function signOut() {
 }
 
 export async function listDocs() {
-  const r = await fetch(`${BASE}/docs`, {
+  return requestJson(`${BASE}/docs`, {
     headers: authHeaders(),
   })
-  return parseJson(r)
 }
 
 export async function createDoc(title = 'Untitled') {
-  const r = await fetch(`${BASE}/docs`, {
+  const doc = await requestJson(`${BASE}/docs`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ title }),
   })
-  const doc = await parseJson(r)
   notifyDocsChanged()
   return doc
 }
 
 export async function getDoc(token) {
-  const r = await fetch(`${BASE}/docs/${token}`)
-  if (!r.ok) throw new Error('Document not found')
-  return r.json()
+  return requestJson(`${BASE}/docs/${token}`)
 }
 
 export async function deleteDoc(id) {
-  const r = await fetch(`${BASE}/docs/${id}`, {
+  await requestJson(`${BASE}/docs/${id}`, {
     method: 'DELETE',
     headers: authHeaders(),
   })
-  await parseJson(r)
   notifyDocsChanged()
 }
 
 export async function getRevisions(id) {
-  const r = await fetch(`${BASE}/docs/${id}/revisions`, {
+  return requestJson(`${BASE}/docs/${id}/revisions`, {
     headers: authHeaders(),
   })
-  if (!r.ok) return []
-  return r.json()
 }
 
 export async function getRevision(docId, revId) {
-  const r = await fetch(`${BASE}/docs/${docId}/revisions/${revId}`, {
+  return requestJson(`${BASE}/docs/${docId}/revisions/${revId}`, {
     headers: authHeaders(),
   })
-  return parseJson(r)
 }
 
 export async function restoreRevision(docId, revId) {
-  const r = await fetch(`${BASE}/docs/${docId}/revisions/${revId}/restore`, {
+  return requestJson(`${BASE}/docs/${docId}/revisions/${revId}/restore`, {
     method: 'POST',
     headers: authHeaders(),
   })
-  return parseJson(r)
 }
 
 export async function updateDocTitle(id, title) {
-  const r = await fetch(`${BASE}/docs/${id}`, {
+  return requestJson(`${BASE}/docs/${id}`, {
     method: 'PATCH',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ title }),
   })
-  return parseJson(r)
 }
 
 export async function updateDocContent(id, content) {
-  const r = await fetch(`${BASE}/docs/${id}`, {
+  return requestJson(`${BASE}/docs/${id}`, {
     method: 'PATCH',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ content }),
   })
-  return parseJson(r)
 }
 
 export async function streamAI(text, action, onChunk, signal) {
@@ -169,7 +174,7 @@ export async function streamAI(text, action, onChunk, signal) {
   })
   if (!r.ok || !r.body) {
     const data = await r.json().catch(() => ({}))
-    throw new Error(data.error || 'AI request failed')
+    throw new ApiError(data.error || 'AI request failed', r.status)
   }
   const reader = r.body.getReader()
   const decoder = new TextDecoder()
@@ -198,22 +203,20 @@ export async function streamAI(text, action, onChunk, signal) {
 }
 
 export async function fetchAiAutocomplete(documentText, signal) {
-  const r = await fetch(`${BASE}/ai/autocomplete`, {
+  const data = await requestJson(`${BASE}/ai/autocomplete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ documentText }),
     signal,
   })
-  const data = await parseJson(r)
   return data.output || ''
 }
 
 export async function aiCommand(instruction, selectionText = '', documentText = '') {
-  const r = await fetch(`${BASE}/ai/command`, {
+  const data = await requestJson(`${BASE}/ai/command`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ instruction, selectionText, documentText }),
   })
-  const data = await parseJson(r)
   return data.output || ''
 }

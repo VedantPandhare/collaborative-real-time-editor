@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { listDocs, createDoc, deleteDoc, signOut } from '../lib/api'
 import { formatDistanceToNow } from 'date-fns'
+import InlineNotice from '../components/InlineNotice'
 
 const TEMPLATES = [
   { id: 'blank', name: 'Blank page', icon: PenSquare, content: '' },
@@ -35,13 +36,18 @@ export default function DashboardModern() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
   const navigate = useNavigate()
 
   const refreshDocs = useCallback(() => {
     setLoading(true)
+    setError('')
     listDocs()
       .then(setDocs)
-      .catch(() => setDocs([]))
+      .catch((err) => {
+        setDocs([])
+        setError(err.message || 'Unable to load your documents right now.')
+      })
       .finally(() => setLoading(false))
   }, [])
 
@@ -66,11 +72,14 @@ export default function DashboardModern() {
 
   const newDoc = async (template = TEMPLATES[0]) => {
     setCreating(true)
+    setError('')
     try {
       const doc = await createDoc(template.name === 'Blank page' ? 'untitled' : template.name)
       const now = Math.floor(Date.now() / 1000)
       setDocs((current) => [{ ...doc, created_at: now, updated_at: now }, ...current])
       navigate(`/doc/${doc.edit_token}`, { state: { template } })
+    } catch (err) {
+      setError(err.message || 'Unable to create a new document.')
     } finally {
       setCreating(false)
     }
@@ -79,8 +88,13 @@ export default function DashboardModern() {
   const remove = async (event, id) => {
     event.stopPropagation()
     if (!window.confirm('Delete this document permanently?')) return
-    await deleteDoc(id)
-    setDocs((current) => current.filter((doc) => doc.id !== id))
+    setError('')
+    try {
+      await deleteDoc(id)
+      setDocs((current) => current.filter((doc) => doc.id !== id))
+    } catch (err) {
+      setError(err.message || 'Unable to delete that document.')
+    }
   }
 
   const filtered = docs.filter((doc) =>
@@ -130,6 +144,7 @@ export default function DashboardModern() {
       </header>
 
       <main className="relative z-10 mx-auto max-w-7xl px-4 pb-16 pt-10">
+        <InlineNotice message={error} tone="error" className="mb-6" />
         <section className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
           <div className="rounded-[36px] border border-white/[0.08] bg-bg-secondary/60 p-8 shadow-[0_40px_120px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:p-10">
             <div className="flex max-w-fit items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2">

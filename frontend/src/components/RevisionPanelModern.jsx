@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Clock, Eye, History, Loader2, RotateCcw, X } from 'lucide-react'
 import { format, formatDistanceToNow } from 'date-fns'
 import { getRevision, getRevisions, restoreRevision } from '../lib/api'
+import InlineNotice from './InlineNotice'
 
 export default function RevisionPanelModern({ docId, onClose, onRestored, modal = false }) {
   const [revisions, setRevisions] = useState([])
@@ -10,37 +11,47 @@ export default function RevisionPanelModern({ docId, onClose, onRestored, modal 
   const [preview, setPreview] = useState(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [restoring, setRestoring] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     if (!docId) return
     setLoading(true)
+    setError('')
     getRevisions(docId)
       .then((rows) => {
         setRevisions(rows)
         setSelected(rows[0] || null)
       })
-      .catch(() => setRevisions([]))
+      .catch((err) => {
+        setRevisions([])
+        setError(err.message || 'Unable to load revision history right now.')
+      })
       .finally(() => setLoading(false))
   }, [docId])
 
   useEffect(() => {
     if (!docId || !selected?.id) return
     setPreviewLoading(true)
+    setError('')
     getRevision(docId, selected.id)
       .then(({ revision }) => setPreview(revision))
-      .catch(() => setPreview(selected))
+      .catch((err) => {
+        setPreview(selected)
+        setError(err.message || 'Unable to load the revision preview.')
+      })
       .finally(() => setPreviewLoading(false))
   }, [docId, selected])
 
   const restore = async (rev) => {
     if (!window.confirm(`Restore this version from ${format(new Date(rev.created_at * 1000), 'PPpp')}?\n\nCurrent content will be overwritten.`)) return
     setRestoring(true)
+    setError('')
     try {
       await restoreRevision(docId, rev.id)
       onRestored?.(rev)
       window.location.reload()
-    } catch (_) {
-      alert('Failed to restore revision')
+    } catch (err) {
+      setError(err.message || 'Failed to restore this revision.')
     } finally {
       setRestoring(false)
     }
@@ -65,6 +76,7 @@ export default function RevisionPanelModern({ docId, onClose, onRestored, modal 
 
       <div className="grid min-h-0 flex-1 md:grid-cols-[340px_1fr]">
         <div className="min-h-0 overflow-y-auto border-r border-[#343942] bg-[#171a1f] p-3">
+          <InlineNotice message={error} tone="error" className="mb-3" />
           {loading ? (
             <div className="flex items-center justify-center py-12 text-text-secondary">
               <Loader2 size={20} className="animate-spin" />

@@ -25,6 +25,10 @@ export default function AuthPage() {
 
   const handleSubmit = async (event) => {
     event.preventDefault()
+    if (!email.trim() || !password) {
+      setError('Email and password are required.')
+      return
+    }
     setLoading(true)
     setError('')
     try {

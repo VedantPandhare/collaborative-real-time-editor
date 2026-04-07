@@ -45,7 +45,7 @@ function ChatMessage({ msg, isOwn }) {
   )
 }
 
-export default function ChatPanel({ onClose, sendChat, messages, users }) {
+export default function ChatPanel({ onClose, sendChat, messages, users, onError }) {
   const [input, setInput] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
@@ -72,7 +72,11 @@ export default function ChatPanel({ onClose, sendChat, messages, users }) {
   const sendMessage = () => {
     const trimmed = input.trim()
     if (!trimmed) return
-    sendChat(trimmed)
+    const sent = sendChat(trimmed)
+    if (!sent) {
+      onError?.('Message could not be sent while the editor is offline.')
+      return
+    }
     setInput('')
     setShowMentions(false)
   }
