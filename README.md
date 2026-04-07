@@ -1,433 +1,189 @@
-# LiveDraft
+# LiveDraft: Real-time Collaborative Writing Workspace
 
-LiveDraft is a collaborative writing workspace for teams that need real-time editing, AI-assisted drafting, revision recovery, and document sharing in one place. It combines a modern editor, presence and cursor awareness, document history, chat, and export features into a single workflow.
+LiveDraft is a high-performance, collaborative writing workspace designed for teams who need more than just a text editor. It blends real-time multi-user editing, AI-powered drafting, revision history, and seamless document sharing into a single, unified writing surface. Built with modern web technologies, LiveDraft ensures that your ideas are captured, refined, and preserved without Friction.
 
-## Introduction
+![LiveDraft Banner](./system.png)
 
-# LiveDraft is designed as a document-first collaboration platform. Instead of splitting work across separate editing, chat, and review tools, it keeps drafting, refinement, discussion, and recovery inside the same writing surface.
+## 🚀 Key Features
 
-At a product level, LiveDraft sits between:
-- a collaborative editor
-- an AI writing assistant
-- a shared team workspace
-- a lightweight versioned document system
+### 💎 Core Editor
+- **Rich Text Suite**: Full support for headings, lists, blockquotes, and advanced formatting.
+- **Dynamic Controls**: Flexible font family and size adjustment.
+- **Floating Toolbar**: Context-aware styling and AI shortcuts right at your cursor.
+- **Slash Commands**: Trigger formatting, AI, and document actions with `/`.
 
-## Features
+### 👥 Collaboration
+- **Real-time Sync**: Latency-optimized multi-user editing powered by `Yjs` CRDTs.
+- **Presence Tracking**: See who is active with remote cursor labels and live avatars.
+- **In-Doc Chat**: Discuss drafts in real-time without leaving the editor.
+- **Shared Access**: Role-based links for collaborative editing or read-only viewing.
 
-### Core editor
-- Rich text editing with paragraph and heading modes
-- Font family and font size controls
-- Bold, italic, underline, strikethrough, inline code
-- Text color and highlight color
-- Lists, blockquotes, alignment, links, images, and table-related actions
-- Floating selection toolbar for quick formatting and AI actions
+### 🤖 AI Capabilities (Powered by Groq)
+- **Document Refinement**: Select text to improve clarity, tone, or grammar.
+- **Summarization**: Instantly condense long paragraphs into concise summaries.
+- **Ghost Writing**: Smart autocomplete and "Continue Writing" features to beat writer's block.
+- **Custom Prompts**: Speak to the AI and have it transform your text on the fly.
 
-### Collaboration
-- Real-time multi-user editing
-- Presence and collaborator count
-- Account-linked collaborator names
-- Remote cursor labels
-- In-document collaboration chat
-- Shared document sessions over WebSockets
+### 📜 Revision Recovery
+- **Automatic Snapshots**: Document states are captured periodically during editing.
+- **Revision Timeline**: Browse through historical versions with ease.
+- **One-Click Restore**: Revert to any previous state whenever needed.
 
-### AI capabilities
-- AI refine selected text
-- AI summarize selected text
-- AI professional rewrite / rephrase
-- AI continue writing
-- Inline ghost preview for continuation
-- `Tab` to accept continuation
-- AI actions in slash commands and selection toolbar
+---
 
-### Revision history
-- Automatic revision capture
-- Per-document version history
-- Revision restore flow
-- Timeline-based revision browsing
-
-### Auth and data
-- JWT-based sign up and sign in
-- Protected routes
-- User-linked collaboration identity
-- SQLite persistence for local document state
-- Supabase mirroring for selected entities
-
-### Export
-- Export to PDF
-- Export to DOCX
-
-## Product Capabilities
-
-LiveDraft supports full document workflows, not just typing:
-- drafting and formatting long-form documents
-- collaborative review with cursor awareness
-- restoring earlier versions when edits go wrong
-- AI-assisted editing without leaving the page
-- account-aware chat and collaboration identity
-- shareable edit and view flows
-
-## System Architecture
-
-### High-level overview
-- `frontend/` contains the React + Vite client
-- `backend/` contains the Node.js + Express API and WebSocket server
-- SQLite stores local document and revision state
-- Supabase mirrors selected application data
-- Groq powers AI generation
-
-### Architecture diagram
-
-![LiveDraft system architecture](./system.png)
-
-## CRDT vs OT
-
-Real-time collaborative editors are commonly built on either Operational Transformation (OT) or Conflict-free Replicated Data Types (CRDTs).
-
-### OT
-Operational Transformation works by transforming operations against one another so concurrent edits can still converge. OT powered many early collaborative editing systems and works well in centralized architectures.
-
-Pros:
-- mature history in collaborative editing
-- good fit for centralized servers
-- efficient when the server is the main source of truth
-
-Cons:
-- transformation logic becomes complex
-- edge cases grow with richer document models
-- harder to reason about when offline or peer-like sync matters
-
-### CRDT
-CRDTs model document state so replicas can merge automatically and still converge without a single transformation authority. LiveDraft uses `Yjs`, which is CRDT-based.
-
-Pros:
-- strong convergence guarantees
-- better model for distributed and conflict-heavy editing
-- works naturally with local-first and offline-friendly patterns
-- easier to extend for presence and replicated shared state
-
-Cons:
-- more metadata overhead than the simplest centralized OT models
-- implementation details can be harder to inspect if the team is new to CRDTs
-
-### Which is better?
-For LiveDraft, CRDT is the better choice.
-
-Why:
-- the app already uses `Yjs`
-- collaboration includes cursor state, shared editing, and live sessions
-- the product benefits from a replicated state model
-- CRDT integrates well with modern rich editors and multi-user experiences
-
-If the product were a simpler centralized plain-text editor with strict server arbitration, OT could still be a valid fit. For LiveDraft’s richer collaborative model, CRDT is the stronger architectural choice.
-
-## Technical Stack
+## 🛠️ Tech Stack
 
 ### Frontend
-- React
-- React Router
-- Vite
-- TipTap
-- Lucide React
-- custom CSS / utility-style classes
-
-Key frontend files:
-- `frontend/src/App.jsx`
-- `frontend/src/pages/LandingPage.jsx`
-- `frontend/src/pages/AuthPage.jsx`
-- `frontend/src/pages/DashboardModern.jsx`
-- `frontend/src/pages/EditorPageWorkspace.jsx`
-- `frontend/src/pages/ViewPage.jsx`
-- `frontend/src/components/ToolbarRich.jsx`
-- `frontend/src/components/SelectionBubbleMenu.jsx`
-- `frontend/src/components/PresenceBar.jsx`
-- `frontend/src/components/RemoteCursorsTiptap.jsx`
-- `frontend/src/components/RevisionPanelModern.jsx`
+- **Framework**: React + Vite
+- **Editor**: TipTap (ProseMirror-based)
+- **Sync**: Yjs + y-websocket
+- **Styling**: Vanilla CSS + Utility Patterns
+- **Icons**: Lucide React
 
 ### Backend
-- Node.js
-- Express
-- native `http` server
-- `ws`
-- `yjs`
-- `y-protocols`
-- `lib0`
-- `jsonwebtoken`
-- `bcryptjs`
-- `groq-sdk`
-- `better-sqlite3`
-- `@supabase/supabase-js`
+- **Runtime**: Node.js + Express
+- **Real-time**: WebSockets (`ws`)
+- **Persistence**: SQLite (Local) + Supabase (Cloud Mirroring)
+- **AI Engine**: Groq SDK (Llama 3.3 models)
+- **Auth**: JWT + Bcrypt
 
-Key backend files:
-- `backend/server.js`
-- `backend/db.js`
-- `backend/supabase.js`
+---
 
-### Data and infrastructure
-- SQLite for local persistence
-- Supabase as external integration/mirroring layer
-- Groq for AI generation
-- WebSockets for real-time collaboration
-
-## Environment Variables
-
-Create `backend/.env` with values like:
-
-```env
-PORT=3001
-GROQ_API_KEY=your_groq_api_key
-JWT_SECRET=your_jwt_secret
-SUPABASE_URL=your_supabase_url
-SUPABASE_ANON_KEY=your_supabase_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-SUPABASE_USERS_TABLE=users
-SUPABASE_DOCUMENTS_TABLE=documents
-```
-
-## Installation and Setup
+## ⚙️ Installation & Setup
 
 ### Prerequisites
-- Node.js 18+
-- npm
-- Groq API key
-- Supabase project credentials
+- **Node.js**: v18.0.0 or higher
+- **npm**: v8.0.0 or higher
+- **API Keys**: Groq API Key and Supabase Project Credentials
 
-### 1. Clone the repository
-
+### 1. Clone the Repository
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/VedantPandhare/collaborative-real-time-editor.git
 cd collaborative-real-time-editor
 ```
 
-### 2. Install backend dependencies
-
+### 2. Configure Environment Variables
+Create a `.env` file in the `backend/` directory:
 ```bash
-cd backend
-npm install
+cp backend/.env.example backend/.env # If example exists, otherwise create new
 ```
 
-### 3. Configure backend environment
+**Required `backend/.env` fields:**
+```env
+PORT=3001
+JWT_SECRET=your_super_secret_key
+GROQ_API_KEY=gsk_your_key_here
 
-Create:
-
-```text
-backend/.env
+# Supabase Configuration
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-role-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_USERS_TABLE=users
+SUPABASE_DOCUMENTS_TABLE=documents
+SUPABASE_CHAT_MESSAGES_TABLE=chat_messages
 ```
 
-Add the required variables from the section above.
-
-### 4. Install frontend dependencies
-
+### 3. Install Dependencies
 ```bash
-cd ../frontend
-npm install
-```
-
-### 5. Run the backend
-
-```bash
-cd ../backend
-npm run dev
-```
-
-### 6. Run the frontend
-
-```bash
-cd ../frontend
-npm run dev
-```
-
-### 7. Open the app
-
-```text
-http://localhost:3000
-```
-
-## Application Routes
-
-- `/`  
-  landing page
-- `/auth`  
-  sign in / sign up
-- `/app`  
-  protected dashboard
-- `/doc/:token`  
-  protected collaborative editor
-- `/view/:token`  
-  read-only shared view
-
-## API Overview
-
-### Auth
-- `POST /api/auth/signup`
-- `POST /api/auth/signin`
-- `GET /api/auth/me`
-
-### Documents
-- `GET /api/docs`
-- `POST /api/docs`
-- `GET /api/docs/:token`
-- `PATCH /api/docs/:id`
-- `DELETE /api/docs/:id`
-
-### Revisions
-- `GET /api/docs/:id/revisions`
-- `POST /api/docs/:id/revisions/:revId/restore`
-
-### AI
-- `POST /api/ai/analyze`
-- `POST /api/ai/command`
-- `POST /api/ai/autocomplete`
-
-### Health
-- `GET /api/health`
-
-## Deployment on AWS EC2 Free Tier
-
-This project is well suited to a single EC2 instance because it needs:
-- a persistent Node backend
-- WebSocket support
-- static frontend hosting
-- a local SQLite file
-
-### Recommended deployment shape
-- EC2 instance for backend and frontend static files
-- Nginx in front of the Node server
-- PM2 to keep the backend running
-- Supabase and Groq stay external
-
-### High-level steps
-
-#### 1. Launch an EC2 instance
-- Use Amazon Linux 2023
-- Choose a free-tier eligible type like `t3.micro` if available
-- Open ports `22`, `80`, and `443`
-
-#### 2. Install runtime dependencies on the instance
-
-```bash
-sudo dnf update -y
-sudo dnf install -y git nginx nodejs
-sudo npm install -g pm2
-```
-
-#### 3. Clone the repository and configure env
-
-```bash
-git clone <your-repo-url>
-cd collaborative-real-time-editor/backend
-nano .env
-```
-
-#### 4. Install and build
-
-```bash
+# Install backend deps
 cd backend
 npm install
 
+# Install frontend deps
 cd ../frontend
 npm install
-npm run build
 ```
 
-#### 5. Start the backend with PM2
+### 4. Run Locally
+We recommend running the backend and frontend in separate terminals during development.
 
+**Start Backend:**
 ```bash
-cd ../backend
-pm2 start server.js --name livedraft-backend
-pm2 save
+cd backend
+npm run dev
 ```
 
-#### 6. Configure Nginx
-
-Use Nginx to:
-- serve `frontend/dist`
-- proxy `/api` to the backend
-- proxy `/ws` with upgrade headers for WebSockets
-
-Example `nginx` server block:
-
-```nginx
-server {
-    listen 80;
-    server_name _;
-
-    root /home/ec2-user/collaborative-real-time-editor/frontend/dist;
-    index index.html;
-
-    location / {
-        try_files $uri /index.html;
-    }
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location /ws/ {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
-```
-
-#### 7. Enable Nginx
-
+**Start Frontend:**
 ```bash
-sudo nginx -t
-sudo systemctl enable nginx
-sudo systemctl restart nginx
+cd frontend
+npm run dev
 ```
+The application will be available at `http://localhost:3000`.
 
-### Why EC2 is a better fit than pure serverless here
-- the app needs long-lived WebSocket connections
-- it currently uses SQLite
-- the collaboration backend benefits from a persistent Node process
+---
 
-## Repository Structure
+## 📊 Database Schema
 
-```text
-collaborative-real-time-editor/
-  backend/
-    db.js
-    server.js
-    supabase.js
-    package.json
-    collab.db
-  frontend/
-    public/
-    src/
-      components/
-      lib/
-      pages/
-    index.html
-    package.json
-  context.markdown
-  README.md
-```
+### Local Persistence (SQLite)
+The application uses `better-sqlite3` for high-performance local storage.
+- **`users`**: Manages authentication and identity.
+- **`documents`**: Stores editor content, Yjs state (binary), and sharing tokens.
+- **`revisions`**: Periodic snapshots for history tracking.
+- **`chat_messages`**: Persistent history for in-document collaboration.
 
-## Notes
+### Cloud Mirroring (Supabase)
+Key events (user signup, document updates, new chat messages) are mirrored to Supabase for external integration and disaster recovery.
 
-- `backend/.env` should stay out of git
-- WebSocket proxying is required in production
-- the frontend bundle is currently large and could be optimized with code splitting
-- `DashboardModern.jsx` is the active dashboard implementation
-- some older files still exist as previous iterations, but routing uses the modern pages
+---
 
-## Conclusion
+## 📡 API Documentation
 
-LiveDraft is a full-stack collaborative document platform that already supports:
-- real-time collaboration
-- AI-assisted writing
-- revision history
-- account-based sessions
-- export workflows
-- persistent storage
+### REST API
 
-It is structured for further evolution into a production-grade collaborative writing environment, with a strong base in CRDT-driven real-time editing and AI-supported document workflows.
+| Endpoint | Method | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `/api/auth/signup` | POST | No | Create a new user account |
+| `/api/auth/signin` | POST | No | Authenticate and get JWT |
+| `/api/auth/me` | GET | Yes | Get current user profile |
+| `/api/docs` | GET | Yes | List all documents owned by user |
+| `/api/docs` | POST | Yes | Create a new blank document |
+| `/api/docs/:token` | GET | No* | Fetch doc by ID or Public Token |
+| `/api/docs/:id` | PATCH | Yes | Update document title or content |
+| `/api/docs/:id` | DELETE | Yes | Permantently remove a document |
+| `/api/docs/:id/revisions` | GET | Yes | List historical snapshots |
+| `/api/docs/:id/revisions/:revId/restore` | POST | Yes | Revert document to a specific revision |
+| `/api/ai/command` | POST | No | Execute a specific AI instruction |
+| `/api/ai/analyze` | POST | No | Streaming AI (summarize, improve, etc.) |
+
+### WebSocket Protocol
+LiveDraft uses a custom binary protocol over WebSockets for performance.
+- **Path**: `/ws?docId={id_or_token}`
+- **Message Types**:
+    - `0`: **Sync** - Yjs document synchronization.
+    - `1`: **Awareness** - Cursors and presence.
+    - `2`: **Chat** - Real-time messaging.
+    - `4`: **Content** - Out-of-band content updates.
+    - `5`: **Presence** - Simplified presence snapshot for UI.
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please follow these steps:
+
+1. **Fork** the repository.
+2. **Create a Feature Branch** (`git checkout -b feature/amazing-feature`).
+3. **Commit Your Changes** (`git commit -m 'Add some amazing feature'`).
+4. **Push to the Branch** (`git push origin feature/amazing-feature`).
+5. **Open a Pull Request**.
+
+### Coding Standards
+- Use **functional components** and Hooks in React.
+- Maintain **semantic HTML** for accessibility.
+- Follow the existing **CSS architecture** (avoiding ad-hoc styles where possible).
+
+---
+
+## 📐 System Architecture
+
+LiveDraft uses a distributed state model. While the backend acts as a coordinator and persistent store, the source of truth for "active" documents is the synchronized `Y.Doc` state shared across all connected clients.
+
+![Architecture Diagram](./system-architecture.mmd)
+
+---
+
+## 📄 License
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+*Developed with ❤️ by the LiveDraft Team.*
