@@ -185,5 +185,4 @@ LiveDraft uses a distributed state model. While the backend acts as a coordinato
 ## 📄 License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
----
-*Developed with ❤️ by the LiveDraft Team.*
+
